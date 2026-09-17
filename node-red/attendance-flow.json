@@ -1,0 +1,655 @@
+[
+  {
+    "id": "f1attend",
+    "type": "tab",
+    "label": "RFID Attendance",
+    "disabled": false,
+    "info": "Smart RFID Student Attendance & Parent Notification System.\nIngress: MQTT (school/attendance/scan) or HTTP POST /attendance.\nEgress : CSV log, Telegram to parent, ACK back to the ESP32 LCD.",
+    "env": []
+  },
+  {
+    "id": "cfgbroker",
+    "type": "mqtt-broker",
+    "name": "Local Broker",
+    "broker": "localhost",
+    "port": "1883",
+    "clientid": "node-red-attendance",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": "",
+    "willMsg": {},
+    "userProps": "",
+    "sessionExpiry": ""
+  },
+  {
+    "id": "c_db",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "1 - Student database",
+    "info": "Put students.json next to your Node-RED settings.js (the userDir, usually\n~/.node-red or %USERPROFILE%\\.node-red).\n\nIt loads automatically 0.5 s after deploy. After editing the file, click the\ninject button to reload it - no restart needed.",
+    "x": 130,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "inj_db",
+    "type": "inject",
+    "z": "f1attend",
+    "name": "Load student DB",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "0.5",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 90,
+    "wires": [
+      [
+        "file_db"
+      ]
+    ]
+  },
+  {
+    "id": "file_db",
+    "type": "file in",
+    "z": "f1attend",
+    "name": "students.json",
+    "filename": "students.json",
+    "filenameType": "str",
+    "format": "utf8",
+    "chunk": false,
+    "sendError": true,
+    "encoding": "none",
+    "allProps": false,
+    "x": 350,
+    "y": 90,
+    "wires": [
+      [
+        "json_db"
+      ]
+    ]
+  },
+  {
+    "id": "json_db",
+    "type": "json",
+    "z": "f1attend",
+    "name": "",
+    "property": "payload",
+    "action": "obj",
+    "pretty": false,
+    "x": 510,
+    "y": 90,
+    "wires": [
+      [
+        "set_db"
+      ]
+    ]
+  },
+  {
+    "id": "set_db",
+    "type": "change",
+    "z": "f1attend",
+    "name": "-> flow.students",
+    "rules": [
+      {
+        "t": "set",
+        "p": "students",
+        "pt": "flow",
+        "to": "payload",
+        "tot": "msg"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 670,
+    "y": 90,
+    "wires": [
+      [
+        "dbg_db"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_db",
+    "type": "debug",
+    "z": "f1attend",
+    "name": "students loaded",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload",
+    "statusType": "auto",
+    "x": 860,
+    "y": 90,
+    "wires": []
+  },
+  {
+    "id": "c_in",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "2 - Scan ingress (MQTT or HTTP)",
+    "info": "The ESP32 publishes {\"device\":\"gate-01\",\"uid\":\"A1B2C3D4\",\"timestamp\":\"...\"}\nto school/attendance/scan.\n\nThe HTTP node is the fallback: POST the same JSON to\nhttp://<node-red-host>:1880/attendance",
+    "x": 130,
+    "y": 170,
+    "wires": []
+  },
+  {
+    "id": "mqtt_in",
+    "type": "mqtt in",
+    "z": "f1attend",
+    "name": "MQTT scan in",
+    "topic": "school/attendance/scan",
+    "qos": "1",
+    "datatype": "json",
+    "broker": "cfgbroker",
+    "nl": false,
+    "rap": "true",
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 220,
+    "wires": [
+      [
+        "fn_norm"
+      ]
+    ]
+  },
+  {
+    "id": "http_in",
+    "type": "http in",
+    "z": "f1attend",
+    "name": "POST /attendance",
+    "url": "/attendance",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 150,
+    "y": 280,
+    "wires": [
+      [
+        "fn_norm"
+      ]
+    ]
+  },
+  {
+    "id": "fn_norm",
+    "type": "function",
+    "z": "f1attend",
+    "name": "Normalise + dedupe",
+    "func": "// ============================================================\n//  Accept a scan from EITHER the MQTT input OR the HTTP input,\n//  clean it up, and drop repeat taps of the same card.\n// ============================================================\n\n// --- 1. Normalise the payload shape -------------------------\nlet p = msg.payload;\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = { uid: p }; }\n}\n\n// --- 2. Clean the UID: uppercase hex characters only ---------\nconst uid = String(p.uid || '').toUpperCase().replace(/[^0-9A-F]/g, '');\nif (!uid) {\n    node.warn('Scan received with no usable UID: ' + JSON.stringify(p));\n    return null;\n}\n\n// --- 3. Trust the ESP32 clock only if NTP actually synced ----\nlet when = new Date();\nif (p.timestamp) {\n    const t = new Date(p.timestamp);\n    if (!isNaN(t.getTime())) { when = t; }\n}\n\n// --- 4. Duplicate guard -------------------------------------\n// Same card at the same door inside the cooldown = a repeat tap,\n// not a second arrival. Change COOLDOWN_MS to suit your school.\nconst COOLDOWN_MS = 5 * 60 * 1000;          // 5 minutes\nconst seen = flow.get('lastSeen') || {};\nconst key  = uid + '@' + (p.device || 'unknown');\nconst dup  = seen[key] && (Date.now() - seen[key] < COOLDOWN_MS);\nseen[key]  = Date.now();\nflow.set('lastSeen', seen);\n\nmsg.scan = {\n    uid:       uid,\n    device:    p.device || 'unknown',\n    when:      when,\n    duplicate: !!dup\n};\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 250,
+    "wires": [
+      [
+        "fn_lookup"
+      ]
+    ]
+  },
+  {
+    "id": "fn_lookup",
+    "type": "function",
+    "z": "f1attend",
+    "name": "Match student",
+    "func": "// ============================================================\n//  Match the UID against the student registry held in\n//  flow context (loaded from students.json at start-up).\n// ============================================================\nconst db  = flow.get('students') || {};\nconst rec = db[msg.scan.uid] || null;\n\nmsg.student = rec;\nmsg.result  = !rec ? 'unknown'\n                   : (msg.scan.duplicate ? 'duplicate' : 'ok');\n\n// Pre-format date and time once so every downstream node agrees.\nconst d   = msg.scan.when;\nconst pad = function (n) { return String(n).padStart(2, '0'); };\nmsg.fmt = {\n    date: d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()),\n    time: pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())\n};\n\nnode.status({\n    fill:  msg.result === 'ok' ? 'green' : 'yellow',\n    shape: 'dot',\n    text:  msg.scan.uid + ' -> ' + msg.result\n});\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 580,
+    "y": 250,
+    "wires": [
+      [
+        "sw_result"
+      ]
+    ]
+  },
+  {
+    "id": "sw_result",
+    "type": "switch",
+    "z": "f1attend",
+    "name": "result?",
+    "property": "result",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "ok",
+        "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "duplicate",
+        "vt": "str"
+      },
+      {
+        "t": "else"
+      }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 3,
+    "x": 750,
+    "y": 250,
+    "wires": [
+      [
+        "fn_csv",
+        "fn_tg",
+        "fn_sheets",
+        "fn_ack"
+      ],
+      [
+        "fn_ack"
+      ],
+      [
+        "fn_unknown",
+        "fn_ack"
+      ]
+    ]
+  },
+  {
+    "id": "c_ok",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "3 - Known student: log + notify",
+    "info": "Create attendance/attendance.csv ONCE with this header line:\nDate,Time,StudentID,Name,Class,UID,Device\n\nPaths are relative to the Node-RED userDir. Open the .csv directly in Excel,\nor swap the file node for node-red-contrib-excel-port to write .xlsx.",
+    "x": 900,
+    "y": 100,
+    "wires": []
+  },
+  {
+    "id": "fn_csv",
+    "type": "function",
+    "z": "f1attend",
+    "name": "Build CSV row",
+    "func": "// ============================================================\n//  One CSV line per attendance record.\n//  Quotes are doubled so names containing commas survive.\n//  Column order must match the header you create once by hand:\n//  Date,Time,StudentID,Name,Class,UID,Device\n// ============================================================\nconst s = msg.student;\nconst f = msg.fmt;\nconst q = function (v) {\n    return '\"' + String(v === null || v === undefined ? '' : v).replace(/\"/g, '\"\"') + '\"';\n};\n\nmsg.payload = [\n    q(f.date),\n    q(f.time),\n    q(s.studentId),\n    q(s.name),\n    q(s.className),\n    q(msg.scan.uid),\n    q(msg.scan.device)\n].join(',');\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 940,
+    "y": 150,
+    "wires": [
+      [
+        "file_csv"
+      ]
+    ]
+  },
+  {
+    "id": "file_csv",
+    "type": "file",
+    "z": "f1attend",
+    "name": "attendance.csv",
+    "filename": "attendance/attendance.csv",
+    "filenameType": "str",
+    "appendNewline": true,
+    "createDir": true,
+    "overwriteFile": "false",
+    "encoding": "none",
+    "x": 1150,
+    "y": 150,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "fn_tg",
+    "type": "function",
+    "z": "f1attend",
+    "name": "Build Telegram message",
+    "func": "// ============================================================\n//  Parent notification via the Telegram Bot API.\n//  No contrib node needed - a plain http request node does it.\n//\n//  SECURITY: keep the bot token OUT of this flow. Set an\n//  environment variable TELEGRAM_BOT_TOKEN before starting\n//  Node-RED, or add it under the flow's \"Environment\" tab.\n// ============================================================\nconst TOKEN = env.get('TELEGRAM_BOT_TOKEN') || 'YOUR_TELEGRAM_BOT_TOKEN';\nif (TOKEN === 'YOUR_TELEGRAM_BOT_TOKEN') {\n    node.warn('TELEGRAM_BOT_TOKEN is not set - notification skipped');\n    return null;\n}\n\nconst s = msg.student;\nif (!s.parentChatId) {\n    node.warn('No parentChatId for ' + s.name + ' - notification skipped');\n    return null;\n}\n\nconst text =\n    'Attendance Alert\\n\\n' +\n    s.name + ' (' + s.studentId + ') has arrived at school at ' +\n    msg.fmt.time + ' on ' + msg.fmt.date + '.\\n' +\n    'Entry point: ' + msg.scan.device;\n\nmsg.method  = 'POST';\nmsg.url     = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = { chat_id: s.parentChatId, text: text };\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 940,
+    "y": 210,
+    "wires": [
+      [
+        "http_tg"
+      ]
+    ]
+  },
+  {
+    "id": "http_tg",
+    "type": "http request",
+    "z": "f1attend",
+    "name": "Telegram sendMessage",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1170,
+    "y": 210,
+    "wires": [
+      [
+        "dbg_tg"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_tg",
+    "type": "debug",
+    "z": "f1attend",
+    "name": "telegram result",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1390,
+    "y": 210,
+    "wires": []
+  },
+  {
+    "id": "fn_sheets",
+    "type": "function",
+    "z": "f1attend",
+    "name": "Build Sheets row (optional)",
+    "func": "// ============================================================\n//  OPTIONAL: mirror the same row into a Google Sheet.\n//\n//  Deploy google-apps-script.gs as a Web App, then set an\n//  environment variable SHEETS_WEBAPP_URL to the /exec URL.\n//  If the variable is missing this branch quietly does nothing.\n// ============================================================\nconst url = env.get('SHEETS_WEBAPP_URL');\nif (!url) { return null; }\n\nconst s = msg.student;\nmsg.method  = 'POST';\nmsg.url     = url;\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    date:      msg.fmt.date,\n    time:      msg.fmt.time,\n    studentId: s.studentId,\n    name:      s.name,\n    className: s.className,\n    uid:       msg.scan.uid,\n    device:    msg.scan.device\n};\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 940,
+    "y": 270,
+    "wires": [
+      [
+        "http_sheets"
+      ]
+    ]
+  },
+  {
+    "id": "http_sheets",
+    "type": "http request",
+    "z": "f1attend",
+    "name": "Google Sheets Web App",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1180,
+    "y": 270,
+    "wires": [
+      [
+        "dbg_sheets"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_sheets",
+    "type": "debug",
+    "z": "f1attend",
+    "name": "sheets result",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1390,
+    "y": 270,
+    "wires": []
+  },
+  {
+    "id": "c_ack",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "4 - Answer the reader",
+    "info": "Every tap gets a reply so the LCD can show a verdict.\nMQTT scans are answered on school/attendance/ack.\nHTTP scans are answered in the HTTP response.",
+    "x": 900,
+    "y": 340,
+    "wires": []
+  },
+  {
+    "id": "fn_ack",
+    "type": "function",
+    "z": "f1attend",
+    "name": "Build LCD ACK",
+    "func": "// ============================================================\n//  Build the two 16-character lines the ESP32 prints on the LCD.\n//  Fed by all three switch outputs, so every tap gets an answer.\n// ============================================================\nconst s = msg.student;\nlet line1, line2;\n\nif (msg.result === 'ok') {\n    line1 = 'Welcome!';\n    line2 = s.name;\n} else if (msg.result === 'duplicate') {\n    line1 = 'Already Tapped';\n    line2 = s ? s.name : msg.scan.uid;\n} else {\n    line1 = 'Unknown Card';\n    line2 = msg.scan.uid;\n}\n\nmsg.topic   = 'school/attendance/ack';\nmsg.payload = {\n    status: msg.result,\n    uid:    msg.scan.uid,\n    name:   s ? s.name : '',\n    line1:  String(line1).substring(0, 16),\n    line2:  String(line2).substring(0, 16)\n};\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 940,
+    "y": 390,
+    "wires": [
+      [
+        "sw_transport"
+      ]
+    ]
+  },
+  {
+    "id": "sw_transport",
+    "type": "switch",
+    "z": "f1attend",
+    "name": "came in over HTTP?",
+    "property": "res",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "nnull"
+      },
+      {
+        "t": "else"
+      }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 2,
+    "x": 1160,
+    "y": 390,
+    "wires": [
+      [
+        "http_resp"
+      ],
+      [
+        "mqtt_ack"
+      ]
+    ]
+  },
+  {
+    "id": "http_resp",
+    "type": "http response",
+    "z": "f1attend",
+    "name": "HTTP 200",
+    "statusCode": "200",
+    "headers": {},
+    "x": 1380,
+    "y": 360,
+    "wires": []
+  },
+  {
+    "id": "mqtt_ack",
+    "type": "mqtt out",
+    "z": "f1attend",
+    "name": "ACK -> ESP32",
+    "topic": "",
+    "qos": "1",
+    "retain": "false",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "cfgbroker",
+    "x": 1380,
+    "y": 420,
+    "wires": []
+  },
+  {
+    "id": "c_unk",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "5 - Unknown cards & errors",
+    "info": "Unregistered UIDs land in attendance/unknown_uids.csv.\nHeader: Date,Time,UID,Device\nCopy a UID from there into students.json to enrol a new student.",
+    "x": 900,
+    "y": 480,
+    "wires": []
+  },
+  {
+    "id": "fn_unknown",
+    "type": "function",
+    "z": "f1attend",
+    "name": "Log unknown UID",
+    "func": "// ============================================================\n//  Unregistered card. Log the UID so you can copy it straight\n//  into students.json and enrol the student.\n//  Header: Date,Time,UID,Device\n// ============================================================\nconst q = function (v) {\n    return '\"' + String(v === null || v === undefined ? '' : v).replace(/\"/g, '\"\"') + '\"';\n};\nmsg.payload = [\n    q(msg.fmt.date),\n    q(msg.fmt.time),\n    q(msg.scan.uid),\n    q(msg.scan.device)\n].join(',');\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 940,
+    "y": 530,
+    "wires": [
+      [
+        "file_unknown"
+      ]
+    ]
+  },
+  {
+    "id": "file_unknown",
+    "type": "file",
+    "z": "f1attend",
+    "name": "unknown_uids.csv",
+    "filename": "attendance/unknown_uids.csv",
+    "filenameType": "str",
+    "appendNewline": true,
+    "createDir": true,
+    "overwriteFile": "false",
+    "encoding": "none",
+    "x": 1160,
+    "y": 530,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "catch_all",
+    "type": "catch",
+    "z": "f1attend",
+    "name": "flow errors",
+    "scope": null,
+    "uncaught": false,
+    "x": 940,
+    "y": 590,
+    "wires": [
+      [
+        "dbg_err"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_err",
+    "type": "debug",
+    "z": "f1attend",
+    "name": "ERROR",
+    "active": true,
+    "tosidebar": true,
+    "console": true,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1140,
+    "y": 590,
+    "wires": []
+  },
+  {
+    "id": "c_test",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "6 - Bench test (no hardware needed)",
+    "info": "Click this inject to push a fake scan through the whole flow.\nEdit the uid to test the known / unknown / duplicate paths.",
+    "x": 130,
+    "y": 380,
+    "wires": []
+  },
+  {
+    "id": "inj_test",
+    "type": "inject",
+    "z": "f1attend",
+    "name": "Simulate tap A1B2C3D4",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"device\":\"gate-01\",\"uid\":\"A1B2C3D4\",\"timestamp\":\"\"}",
+    "payloadType": "json",
+    "x": 180,
+    "y": 430,
+    "wires": [
+      [
+        "fn_norm"
+      ]
+    ]
+  }
+]

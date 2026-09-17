@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Student registry. The KEY is the card UID exactly as the ESP32 prints it:",
+    "uppercase hex, no spaces, no colons (e.g. A1B2C3D4).",
+    "Read the UID from the Arduino Serial Monitor at 115200 baud, or from the",
+    "'unknown_uids.csv' file that the Node-RED flow writes for unregistered cards.",
+    "parentChatId = the Telegram chat id of the parent (get it from @userinfobot).",
+    "Delete this _comment key once you start editing for real."
+  ],
+
+  "A1B2C3D4": {
+    "studentId": "S2026-001",
+    "name": "Ali Bin Ahmad",
+    "className": "5 Bestari",
+    "parentName": "Encik Ahmad",
+    "parentChatId": "111111111",
+    "parentPhone": "+60123456789"
+  },
+  "0D5E6F7A": {
+    "studentId": "S2026-002",
+    "name": "Siti Nurhaliza",
+    "className": "5 Bestari",
+    "parentName": "Puan Aminah",
+    "parentChatId": "222222222",
+    "parentPhone": "+60129876543"
+  },
+  "9F8E7D6C": {
+    "studentId": "S2026-003",
+    "name": "Tan Wei Ming",
+    "className": "5 Cekap",
+    "parentName": "Mr Tan",
+    "parentChatId": "333333333",
+    "parentPhone": "+60161234567"
+  }
+}
