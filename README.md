@@ -1,7 +1,7 @@
 # Smart RFID Student Attendance System
 ### with Excel/Sheets logging and parent notification
 
-Hardware: **Cytron Maker ESP32** + expansion board, **Mifare RC522**, **I2C 16x2 LCD (0x27)**, **active buzzer**
+Hardware: **Cytron Maker ESP32**, **Mifare RC522** (`RFID-RC522`), **I2C 16x2 LCD** (`DS-LCD-162A-I2C`, 0x27), **onboard piezo buzzer**
 Backend: **Mosquitto MQTT** + **Node-RED** + **CSV/Excel** + **Telegram**
 
 ---
@@ -18,9 +18,9 @@ Backend: **Mosquitto MQTT** + **Node-RED** + **CSV/Excel** + **Telegram**
    │   │  RC522    │───────►│                 │          │
    │   └───────────┘        │                 │  I2C     │   ┌────────────┐
    │                        │  Cytron         │─────────►│   │ 16x2 LCD   │
-   │   ┌───────────┐  GPIO  │  Maker ESP32    │          │   │   0x27     │
-   │   │  Buzzer   │◄───────│                 │          │   └────────────┘
-   │   └───────────┘        └────────┬────────┘          │
+   │    (onboard     GPIO26 │  Maker ESP32    │          │   │   0x27     │
+   │     piezo) ◄───────────│                 │          │   └────────────┘
+   │                        └────────┬────────┘          │
    │                                 │ Wi-Fi             │
    └─────────────────────────────────┼───────────────────┘
                                      │
@@ -58,6 +58,10 @@ shows *Welcome!* or *Unknown Card*.
 
 ### 2.1 RC522 RFID reader → ESP32 (SPI / VSPI)
 
+Module: **Cytron `RFID-RC522`** Mifare kit. The 8-pin header runs down one edge in this
+order — `SDA, SCK, MOSI, MISO, IRQ, GND, RST, 3.3V` — and it ships **loose, not soldered**
+(see §2.6).
+
 | RC522 pin | ESP32 GPIO | Notes |
 |---|---|---|
 | `SDA` / `SS` / `NSS` | **GPIO5** | Chip select. See the boot note below. |
@@ -69,39 +73,63 @@ shows *Welcome!* or *Unknown Card*.
 | `RST` | **GPIO27** | |
 | `3.3V` | **3V3** | ⚠️ **3.3 V ONLY — 5 V destroys the RC522** |
 
-### 2.2 I2C 16x2 LCD → ESP32 (Maker Port)
+### 2.2 I2C 16x2 LCD → ESP32
 
-| LCD backpack | ESP32 GPIO | Notes |
+Module: **Cytron `DS-LCD-162A-I2C`** — I2C address `0x27`, supply 5 V, blue backlight.
+The backpack has a 4-pin header in this order:
+
+| LCD backpack pin | ESP32 | Notes |
 |---|---|---|
-| `SDA` | **GPIO21** | Maker Port SDA |
-| `SCL` | **GPIO22** | Maker Port SCL |
-| `VCC` | **5V / VIN** | The LCD module needs 5 V for contrast |
 | `GND` | **GND** | |
+| `VCC` | **3.3V** *(try first)* or **5V** | see §2.6 — this choice matters |
+| `SDA` | **GPIO21** | |
+| `SCL` | **GPIO22** | |
 
-The backpack's I2C lines are open-drain and pulled to its own logic rail. The common
-PCF8574 backpacks are 3.3 V-tolerant on SDA/SCL and work directly. If your LCD is dim,
-it is under-powered — feed VCC from 5 V, not 3.3 V.
+Address `0x27` is confirmed on the product page, so the `LiquidCrystal_I2C lcd(0x27, 16, 2);`
+line in the sketch is already correct for your unit.
 
-### 2.3 Buzzer → ESP32
+### 2.3 Buzzer
 
-| Buzzer | ESP32 GPIO | Notes |
-|---|---|---|
-| `+` / `VCC` / `I/O` | **GPIO25** | External **active** buzzer |
-| `−` / `GND` | **GND** | |
+**Using the onboard buzzer — no wiring at all.**
 
-Alternative: the Maker ESP32 already has an onboard **passive piezo on GPIO26** with a
-hardware mute switch. To use it instead, set `PIN_BUZZER` to `26` and
-`BUZZER_IS_ACTIVE` to `0` in the sketch, and make sure the mute switch is ON.
+The Maker ESP32 has a **passive piezo hard-wired to GPIO26**, so there is nothing to
+connect. The sketch ships configured for it:
+
+```cpp
+#define PIN_BUZZER       26
+#define BUZZER_IS_ACTIVE  0      // passive piezo -> driven with tone()
+```
+
+⚠️ **The board has a hardware mute switch next to the buzzer.** If it is off you hear
+nothing regardless of the code. Check this before debugging anything else.
+
+**Passive vs active — why it changes the code.** A passive piezo has no oscillator
+inside. Holding the pin HIGH deflects the disc once and leaves it there: a faint click,
+then silence. It needs a square wave, which is what `tone()` produces. An active buzzer
+is the opposite — it oscillates on its own, so `digitalWrite()` is correct and `tone()`
+would be wrong. The sketch picks the right one from `BUZZER_IS_ACTIVE`.
+
+**If you'd rather use an external active buzzer** (louder, better through an enclosure):
+
+| Buzzer | ESP32 GPIO |
+|---|---|
+| `+` / `VCC` / `I/O` | **GPIO25** |
+| `−` / `GND` | **GND** |
+
+then set `PIN_BUZZER` back to `25` and `BUZZER_IS_ACTIVE` to `1`.
+
+**Test it first:** upload [`firmware/BuzzerTest/BuzzerTest.ino`](firmware/BuzzerTest/BuzzerTest.ino)
+before touching the main project — see §3.6.
 
 ### 2.4 Pins that are now spoken for
 
 ```
- 5  RC522 SS      18  RC522 SCK     21  LCD SDA      25  Buzzer
+ 5  RC522 SS      18  RC522 SCK     21  LCD SDA      26  onboard buzzer
 19  RC522 MISO    23  RC522 MOSI    22  LCD SCL      27  RC522 RST
 ```
 
-Still free for expansion (LEDs, extra sensors): **2, 12, 13, 16, 17, 32, 33**
-and input-only **34, 35, 36, 39**.
+Still free for expansion (LEDs, extra sensors): **2, 12, 13, 16, 17, 25, 32, 33**
+and input-only **34, 35, 36, 39**. GPIO25 is free again now that the buzzer is onboard.
 
 ### 2.5 Safety rules that shaped these choices
 
@@ -114,6 +142,54 @@ and input-only **34, 35, 36, 39**.
   change `PIN_RC522_SS` to match. Nothing else needs to change.
 - Other strapping pins to be careful with: **GPIO 0, 2, 4, 12, 15**.
 - The user button is on **GPIO4** (active LOW) if you want a manual override later.
+
+### 2.6 Notes specific to these two Cytron modules
+
+#### (a) The RC522 header is not soldered
+
+The kit ships the 8-pin header **loose in the bag**. You have to solder it yourself before
+anything works. Two choices:
+
+- **Straight header** — pins point up, jumper wires plug in from above. Easiest to solder.
+- **Right-angle header** — the module lies flat behind a panel. Better for a real gate
+  enclosure, slightly fiddlier.
+
+Solder all 8 pins even if you never use `IRQ`; a header with one leg free rocks and
+cracks the joints. A cold joint on `MISO` is the single most common reason
+`PCD_DumpVersionToSerial()` prints `0x00`.
+
+The kit's white card and keychain fob are Mifare Classic 1K, which give a **4-byte UID =
+8 hex characters** (e.g. `A1B2C3D4`). The `uidToHex()` function loops over `uid.size`, so
+7-byte UIDs from newer tags also work without any code change.
+
+#### (b) The LCD runs at 5 V but the ESP32 does not — read this before wiring
+
+The product page lists the LCD supply as **5 V**. The PCF8574 backpack has two ~4.7 kΩ
+pull-up resistors from `SDA`/`SCL` to its own `VCC`. So if you feed `VCC` with 5 V, the
+I2C lines idle at **5 V** — and the ESP32's absolute maximum on any GPIO is 3.6 V.
+
+This is the one place where the standard tutorial wiring is out of spec. Four options,
+best first:
+
+| | Wiring | Verdict |
+|---|---|---|
+| **1** | `VCC` → **3.3 V**, SDA/SCL direct | **Try this first.** Fully in spec, zero extra parts. The PCF8574 works down to 2.5 V. Turn the contrast pot — if the characters are crisp, you are done. Backlight is a little dimmer. |
+| **2** | `VCC` → **5 V**, SDA/SCL through a bi-directional logic level converter | The correct answer if option 1 is too faint. One extra RM3 part. Use this for a system that has to run all school year. |
+| **3** | `VCC` → **5 V**, desolder the two pull-up resistors on the backpack, enable the ESP32's internal pull-ups | Free, in spec, permanent mod to the module. Fine at 100 kHz with short wires. |
+| **4** | `VCC` → **5 V**, SDA/SCL direct | What most tutorials show. It usually survives — the 4.7 kΩ resistors limit current into the ESP32's clamp diodes to ~360 µA — but it is outside the datasheet and it stresses the pin. Your call; I would not ship a school installation this way. |
+
+Try option 1 tonight. It costs nothing and most of these modules are perfectly readable at
+3.3 V once the pot is tuned. If yours is not, go to option 2.
+
+The RC522 has no such problem — it is a native 3.3 V part and connects straight to the
+ESP32. The onboard buzzer needs no wiring at all, so it sidesteps the question entirely.
+
+#### (c) Where 3.3 V and 5 V come from
+
+If your expansion board has per-GPIO 3-pin headers (signal / V / GND) with a **VCC
+selection jumper**, set it deliberately: the RC522 must be on the **3.3 V** setting. If
+the jumper is shared across the whole board and set to 5 V, power the RC522 from a
+separate 3.3 V pin instead — 5 V will destroy it.
 
 ---
 
@@ -189,13 +265,42 @@ own clock instead — no record is ever lost to a missing time sync.
 
 | Event | Buzzer | LCD |
 |---|---|---|
-| Boot | 1 × 120 ms | `RFID Attendance` / `Starting up...` |
+| Boot | two-note chirp | `RFID Attendance` / `Starting up...` |
 | Idle | — | `Tap Your Card...` / IP address or `WiFi...` |
 | Card detected | 1 × 60 ms (instant) | `Card Tapped!` / the UID |
 | Server says OK | 2 × 70 ms | `Welcome!` / student name |
 | Repeat tap | 1 × 300 ms | `Already Tapped` / name |
 | Unknown card | 3 × 250 ms | `Unknown Card` / the UID |
 | No server | — | `Offline!` / `Not recorded` |
+
+### 3.6 Testing the onboard buzzer on its own
+
+Upload [`firmware/BuzzerTest/BuzzerTest.ino`](firmware/BuzzerTest/BuzzerTest.ino) —
+no libraries needed. Open Serial Monitor at **115200**. You should hear a two-note boot
+chirp immediately, then get a menu:
+
+| Key | Plays | Used in the project for |
+|---|---|---|
+| `1` | one short chirp | card detected |
+| `2` | two rising notes | tap accepted |
+| `3` | one flat mid note | duplicate tap |
+| `4` | three low notes | unknown card |
+| `5` | boot chirp | power-on |
+| `6` | sweep 1 kHz → 4.5 kHz | **finding your loudest frequency** |
+| `7` | C major scale | proves pitch control works |
+| `0` | silence | panic button |
+
+**Run option 6 first.** Piezo discs have a mechanical resonance, and yours will be
+noticeably louder at one point in the sweep — usually somewhere between 2 and 3 kHz.
+Note which step sounds loudest and set `BUZZER_TONE_HZ` in the main sketch to match.
+That single change is worth more volume than anything else you can do in software.
+
+**Silent?** In this order: (1) the **mute switch**, (2) is `PIN_BUZZER` really `26`,
+(3) did you leave `BUZZER_IS_ACTIVE` at `1` — a passive piezo driven by `digitalWrite()`
+clicks once and then goes quiet.
+
+The note sequencer in the test sketch is the same non-blocking pattern the main project
+uses, so anything you like here transfers straight across.
 
 ---
 
@@ -370,9 +475,11 @@ mosquitto_sub -h localhost -t 'school/attendance/#' -v
 2. **Reader check.** `PCD_DumpVersionToSerial()` should print firmware **0x92** or
    **0x91**. `0x00` or `0xFF` means wiring — re-check MOSI/MISO/SCK and confirm the
    RC522 is on **3.3 V**.
-3. **LCD check.** If the screen is blank but backlit, turn the blue contrast pot on
-   the backpack. If it is completely dead, the address is probably `0x3F` — change
-   the `LiquidCrystal_I2C lcd(0x27, 16, 2);` line.
+3. **LCD check.** The sketch runs an I2C scan at boot and prints what it finds:
+   - `device at 0x27` → wiring is good. A blank-but-backlit screen is now purely a
+     contrast problem: turn the small blue pot on the backpack.
+   - `device at 0x3F` → change the `LiquidCrystal_I2C lcd(0x27, 16, 2);` line.
+   - `nothing found` → SDA/SCL swapped, backpack unpowered, or a loose wire.
 4. **Network check.** The idle screen should change from `WiFi...` → `Server...` →
    the board's IP address.
 5. **Tap a card.** Expect: one short beep immediately, `Card Tapped!` + the UID, then
@@ -396,7 +503,8 @@ Tap the new card → open `attendance/unknown_uids.csv` → copy the UID → add
 
 | Symptom | Likely cause |
 |---|---|
-| RC522 version reads `0x00` / `0xFF` | Loose SPI wire, or the module is on 5 V |
+| RC522 version reads `0x00` / `0xFF` | Cold solder joint on the header (most often MISO), loose SPI wire, or the module is on 5 V |
+| LCD faint at 3.3 V even at full pot | Expected on some units — move to §2.6(b) option 2 |
 | Reader works on the bench, dies in the enclosure | 3.3 V rail sagging — power the ESP32 from a proper USB-C supply, not a laptop hub |
 | LCD blank but lit | Contrast pot, or wrong I2C address (`0x27` vs `0x3F`) |
 | LCD shows `Server...` forever | Wrong `MQTT_HOST`, firewall on 1883, or broker requires auth |

@@ -1,10 +1,10 @@
 /**************************************************************************************
  *  Smart RFID Student Attendance & Parent Notification System
  *  -----------------------------------------------------------------------------------
- *  Board    : ESP32 dev board + expansion board (incl. Cytron Maker ESP32)
- *  Reader   : Cytron RFID-RC522 kit, SPI  --  3.3V ONLY, NEVER 5V
- *  Display  : Cytron DS-LCD-162A-I2C, 16x2 @ 0x27  (SDA = GPIO21, SCL = GPIO22)
- *  Buzzer   : Onboard passive piezo on GPIO26 (mute switch must be ON)
+ *  Board    : Cytron Maker ESP32 (ESP32-WROOM-32E-N8) + expansion board
+ *  Reader   : Mifare RC522, SPI  --  3.3V ONLY, NEVER 5V
+ *  Display  : I2C 16x2 LCD @ 0x27 on the Maker Port (SDA = GPIO21, SCL = GPIO22)
+ *  Buzzer   : Active buzzer on GPIO25  (onboard passive piezo on GPIO26 = alternative)
  *  Backend  : Node-RED, reached over MQTT
  *
  *  DESIGN RULES FOLLOWED
@@ -33,7 +33,7 @@
 #include "secrets.h"
 
 /* ===================================================================================
- *  1.  PIN MAP  -  standard ESP32 GPIOs; none clash with flash or input-only pins
+ *  1.  PIN MAP  -  every pin here is confirmed safe on the Maker ESP32
  * =================================================================================== */
 #define PIN_RC522_SCK    18      // SPI clock    (VSPI default)
 #define PIN_RC522_MISO   19      // SPI data in  (VSPI default)
@@ -41,19 +41,13 @@
 #define PIN_RC522_SS      5      // Chip select  (RC522 label: SDA / NSS)
 #define PIN_RC522_RST    27      // Reset
 
-#define PIN_I2C_SDA      21      // LCD SDA (Maker Port SDA on a Maker ESP32)
-#define PIN_I2C_SCL      22      // LCD SCL (Maker Port SCL on a Maker ESP32)
+#define PIN_I2C_SDA      21      // Maker Port SDA -- LCD
+#define PIN_I2C_SCL      22      // Maker Port SCL -- LCD
 
-#define USE_INTERNAL_PULLUPS 0   // 1 only if you desoldered the LCD backpack pull-ups
-
-// Onboard PASSIVE piezo of the Maker ESP32. Remember the hardware MUTE SWITCH:
-// if it is off you hear nothing, whatever the code does. See BuzzerTest/ first.
-#define PIN_BUZZER       26      // 26 = onboard piezo | 25 = external active buzzer
-#define BUZZER_IS_ACTIVE  0      // 0 = passive piezo, driven with tone()
-                                 // 1 = active buzzer, driven with plain HIGH/LOW
-#define BUZZER_TONE_HZ 2500      // only used when BUZZER_IS_ACTIVE is 0.
-                                 // Run BuzzerTest option 6 and set this to whichever
-                                 // frequency is loudest on your board.
+#define PIN_BUZZER       25      // External ACTIVE buzzer (+ leg)
+#define BUZZER_IS_ACTIVE  1      // 1 = active buzzer (plain HIGH/LOW)
+                                 // 0 = passive piezo (uses tone(); onboard one is GPIO26)
+#define BUZZER_TONE_HZ 2500      // only used when BUZZER_IS_ACTIVE is 0
 
 /* ===================================================================================
  *  2.  IDENTITY, TOPICS AND TIMING CONSTANTS
@@ -175,23 +169,6 @@ void serviceLcd() {
     tLcdRelease = 0;
     lcdIdle();
   }
-}
-
-// Runs once at boot. If the LCD stays blank, check this output first:
-//   "0x27" found  -> wiring is fine, it is a contrast problem (turn the blue pot)
-//   "0x3F" found  -> change the LiquidCrystal_I2C(...) address at the top of this file
-//   nothing found -> SDA/SCL swapped, no power to the backpack, or a loose wire
-void i2cScan() {
-  Serial.println("[I2C] scanning...");
-  uint8_t found = 0;
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) {
-      Serial.printf("[I2C]   device at 0x%02X\n", addr);
-      found++;
-    }
-  }
-  if (!found) Serial.println("[I2C]   nothing found -- check SDA/SCL and power");
 }
 
 /* ===================================================================================
@@ -353,18 +330,8 @@ void setup() {
   pinMode(PIN_BUZZER, OUTPUT);
   buzzerWrite(false);
 
-  // --- LCD ---
-  // The Cytron DS-LCD-162A-I2C backpack carries its own ~4.7k pull-ups to ITS Vcc.
-  // If you powered it from 5 V, the bus idles at 5 V, which is above the ESP32's
-  // 3.6 V absolute maximum -- see README section 2.6(b) before wiring.
-  // If you removed those resistors (README option 3), set USE_INTERNAL_PULLUPS to 1.
-#if USE_INTERNAL_PULLUPS
-  pinMode(PIN_I2C_SDA, INPUT_PULLUP);
-  pinMode(PIN_I2C_SCL, INPUT_PULLUP);
-#endif
+  // --- LCD on the Maker Port ---
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  Wire.setClock(100000);               // 100 kHz is kind to long jumper wires
-  i2cScan();                           // prints every address found -- expect 0x27
   lcd.init();
   lcd.backlight();
   lcd.clear();
