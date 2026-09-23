@@ -2,16 +2,71 @@
   {
     "id": "f1attend",
     "type": "tab",
-    "label": "RFID Attendance",
+    "label": "Tap Processing",
     "disabled": false,
-    "info": "Smart RFID Student Attendance & Parent Notification System.\nIngress: MQTT (school/attendance/scan) or HTTP POST /attendance.\nEgress : CSV log, Telegram to parent, ACK back to the ESP32 LCD.",
-    "env": []
+    "info": "Every card tap: arrival, LATE arrival, departure or repeat.\n\nSchool hours live in school-calendar.json, not here, so both tabs agree.\nCredentials live on this tab -> Environment.",
+    "env": [
+      {
+        "name": "TELEGRAM_BOT_TOKEN",
+        "value": "",
+        "type": "str"
+      },
+      {
+        "name": "SHEETS_WEBAPP_URL",
+        "value": "",
+        "type": "str"
+      },
+      {
+        "name": "TEST_CHAT_ID",
+        "value": "6535703218",
+        "type": "str"
+      }
+    ]
+  },
+  {
+    "id": "f2rollcall",
+    "type": "tab",
+    "label": "Roll Call",
+    "disabled": false,
+    "info": "Time-driven checks.\n\n  MORNING  at classStart + graceSeconds  -> who never arrived?\n  END OF DAY at classEnd + checkoutGraceSeconds -> who never left?\n\nBoth deadlines come from school-calendar.json. Set graceSeconds to 10 for a live demo and the checks follow automatically.",
+    "env": [
+      {
+        "name": "TELEGRAM_BOT_TOKEN",
+        "value": "",
+        "type": "str"
+      },
+      {
+        "name": "ADMIN_CHAT_ID",
+        "value": "6535703218",
+        "type": "str"
+      },
+      {
+        "name": "SCHOOL_NAME",
+        "value": "the school",
+        "type": "str"
+      },
+      {
+        "name": "SCHOOL_CONTACT",
+        "value": "Office: 04-000 0000",
+        "type": "str"
+      },
+      {
+        "name": "NOTIFY_PARENTS",
+        "value": "false",
+        "type": "str"
+      },
+      {
+        "name": "NOTIFY_NOT_CHECKED_OUT",
+        "value": "false",
+        "type": "str"
+      }
+    ]
   },
   {
     "id": "cfgbroker",
     "type": "mqtt-broker",
     "name": "Local Broker",
-    "broker": "localhost",
+    "broker": "192.168.137.1",
     "port": "1883",
     "clientid": "node-red-attendance",
     "autoConnect": true,
@@ -39,8 +94,8 @@
     "id": "c_db",
     "type": "comment",
     "z": "f1attend",
-    "name": "1 - Student database",
-    "info": "Put students.json next to your Node-RED settings.js (the userDir, usually\n~/.node-red or %USERPROFILE%\\.node-red).\n\nIt loads automatically 0.5 s after deploy. After editing the file, click the\ninject button to reload it - no restart needed.",
+    "name": "1 - Student roster",
+    "info": "students.json must sit in the Node-RED user directory. Set the FULL path on the file node. Click the inject after editing it - no restart needed.\n\nThe roster is published to GLOBAL context so the Roll Call tab can read it too.",
     "x": 130,
     "y": 40,
     "wires": []
@@ -58,7 +113,7 @@
     "repeat": "",
     "crontab": "",
     "once": true,
-    "onceDelay": "0.5",
+    "onceDelay": "1",
     "topic": "",
     "payload": "",
     "payloadType": "date",
@@ -74,7 +129,7 @@
     "id": "file_db",
     "type": "file in",
     "z": "f1attend",
-    "name": "students.json",
+    "name": "students.json  (SET PATH)",
     "filename": "students.json",
     "filenameType": "str",
     "format": "utf8",
@@ -82,7 +137,7 @@
     "sendError": true,
     "encoding": "none",
     "allProps": false,
-    "x": 350,
+    "x": 370,
     "y": 90,
     "wires": [
       [
@@ -98,7 +153,7 @@
     "property": "payload",
     "action": "obj",
     "pretty": false,
-    "x": 510,
+    "x": 560,
     "y": 90,
     "wires": [
       [
@@ -110,12 +165,19 @@
     "id": "set_db",
     "type": "change",
     "z": "f1attend",
-    "name": "-> flow.students",
+    "name": "-> flow + global",
     "rules": [
       {
         "t": "set",
         "p": "students",
         "pt": "flow",
+        "to": "payload",
+        "tot": "msg"
+      },
+      {
+        "t": "set",
+        "p": "students",
+        "pt": "global",
         "to": "payload",
         "tot": "msg"
       }
@@ -125,7 +187,7 @@
     "from": "",
     "to": "",
     "reg": false,
-    "x": 670,
+    "x": 720,
     "y": 90,
     "wires": [
       [
@@ -137,16 +199,16 @@
     "id": "dbg_db",
     "type": "debug",
     "z": "f1attend",
-    "name": "students loaded",
+    "name": "roster loaded",
     "active": true,
     "tosidebar": true,
     "console": false,
-    "tostatus": true,
+    "tostatus": false,
     "complete": "payload",
     "targetType": "msg",
-    "statusVal": "payload",
+    "statusVal": "",
     "statusType": "auto",
-    "x": 860,
+    "x": 900,
     "y": 90,
     "wires": []
   },
@@ -154,10 +216,10 @@
     "id": "c_in",
     "type": "comment",
     "z": "f1attend",
-    "name": "2 - Scan ingress (MQTT or HTTP)",
-    "info": "The ESP32 publishes {\"device\":\"gate-01\",\"uid\":\"A1B2C3D4\",\"timestamp\":\"...\"}\nto school/attendance/scan.\n\nThe HTTP node is the fallback: POST the same JSON to\nhttp://<node-red-host>:1880/attendance",
+    "name": "2 - A tap arrives",
+    "info": "ESP32 publishes {\"device\":\"gate-01\",\"uid\":\"B96DF306\",\"timestamp\":\"...\"} to school/attendance/scan.\n\nHTTP fallback: POST the same JSON to http://192.168.137.1:1880/attendance",
     "x": 130,
-    "y": 170,
+    "y": 180,
     "wires": []
   },
   {
@@ -174,7 +236,7 @@
     "rh": 0,
     "inputs": 0,
     "x": 150,
-    "y": 220,
+    "y": 230,
     "wires": [
       [
         "fn_norm"
@@ -190,8 +252,33 @@
     "method": "post",
     "upload": false,
     "swaggerDoc": "",
-    "x": 150,
+    "x": 160,
     "y": 280,
+    "wires": [
+      [
+        "fn_norm"
+      ]
+    ]
+  },
+  {
+    "id": "inj_test",
+    "type": "inject",
+    "z": "f1attend",
+    "name": "Simulate tap B96DF306",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"device\":\"gate-01\",\"uid\":\"B96DF306\",\"timestamp\":\"\"}",
+    "payloadType": "json",
+    "x": 190,
+    "y": 330,
     "wires": [
       [
         "fn_norm"
@@ -202,16 +289,16 @@
     "id": "fn_norm",
     "type": "function",
     "z": "f1attend",
-    "name": "Normalise + dedupe",
-    "func": "// ============================================================\n//  Accept a scan from EITHER the MQTT input OR the HTTP input,\n//  clean it up, and drop repeat taps of the same card.\n// ============================================================\n\n// --- 1. Normalise the payload shape -------------------------\nlet p = msg.payload;\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = { uid: p }; }\n}\n\n// --- 2. Clean the UID: uppercase hex characters only ---------\nconst uid = String(p.uid || '').toUpperCase().replace(/[^0-9A-F]/g, '');\nif (!uid) {\n    node.warn('Scan received with no usable UID: ' + JSON.stringify(p));\n    return null;\n}\n\n// --- 3. Trust the ESP32 clock only if NTP actually synced ----\nlet when = new Date();\nif (p.timestamp) {\n    const t = new Date(p.timestamp);\n    if (!isNaN(t.getTime())) { when = t; }\n}\n\n// --- 4. Duplicate guard -------------------------------------\n// Same card at the same door inside the cooldown = a repeat tap,\n// not a second arrival. Change COOLDOWN_MS to suit your school.\nconst COOLDOWN_MS = 5 * 60 * 1000;          // 5 minutes\nconst seen = flow.get('lastSeen') || {};\nconst key  = uid + '@' + (p.device || 'unknown');\nconst dup  = seen[key] && (Date.now() - seen[key] < COOLDOWN_MS);\nseen[key]  = Date.now();\nflow.set('lastSeen', seen);\n\nmsg.scan = {\n    uid:       uid,\n    device:    p.device || 'unknown',\n    when:      when,\n    duplicate: !!dup\n};\nreturn msg;\n",
+    "name": "normalise + debounce",
+    "func": "// ============================================================\n//  Accept a scan from MQTT, HTTP or the simulate button, clean\n//  it up, and swallow contact bounce.\n//\n//  NOTE: this only removes the same card re-reading itself within\n//  a few seconds. Whether a tap is an arrival, a late arrival, a\n//  departure or a pointless repeat is decided later, in \"classify tap\".\n// ============================================================\nconst BOUNCE_MS = 8000;\n\nlet p = msg.payload;\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = { uid: p }; }\n}\n\nconst uid = String(p.uid || '').toUpperCase().replace(/[^0-9A-F]/g, '');\nif (!uid) {\n    node.warn('Scan received with no usable UID: ' + JSON.stringify(p));\n    return null;\n}\n\n// Trust the ESP32 clock only if NTP actually synced.\nlet when = new Date();\nif (p.timestamp) {\n    const t = new Date(p.timestamp);\n    if (!isNaN(t.getTime())) { when = t; }\n}\n\nconst seen = flow.get('bounce') || {};\nconst key  = uid + '@' + (p.device || 'unknown');\nif (seen[key] && (Date.now() - seen[key] < BOUNCE_MS)) {\n    node.status({ fill: 'grey', shape: 'ring', text: 'bounce ignored' });\n    return null;\n}\nseen[key] = Date.now();\nflow.set('bounce', seen);\n\nmsg.scan = { uid: uid, device: p.device || 'unknown', when: when };\nreturn msg;\n",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 390,
-    "y": 250,
+    "x": 420,
+    "y": 280,
     "wires": [
       [
         "fn_lookup"
@@ -222,16 +309,36 @@
     "id": "fn_lookup",
     "type": "function",
     "z": "f1attend",
-    "name": "Match student",
-    "func": "// ============================================================\n//  Match the UID against the student registry held in\n//  flow context (loaded from students.json at start-up).\n// ============================================================\nconst db  = flow.get('students') || {};\nconst rec = db[msg.scan.uid] || null;\n\nmsg.student = rec;\nmsg.result  = !rec ? 'unknown'\n                   : (msg.scan.duplicate ? 'duplicate' : 'ok');\n\n// Pre-format date and time once so every downstream node agrees.\nconst d   = msg.scan.when;\nconst pad = function (n) { return String(n).padStart(2, '0'); };\nmsg.fmt = {\n    date: d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()),\n    time: pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())\n};\n\nnode.status({\n    fill:  msg.result === 'ok' ? 'green' : 'yellow',\n    shape: 'dot',\n    text:  msg.scan.uid + ' -> ' + msg.result\n});\nreturn msg;\n",
+    "name": "match student",
+    "func": "// ============================================================\n//  Match the UID against the student registry.\n// ============================================================\nconst db  = global.get('students') || {};\nconst rec = db[msg.scan.uid] || null;\n\nmsg.student = rec;\n\nconst d   = msg.scan.when;\nconst pad = function (n) { return String(n).padStart(2, '0'); };\nmsg.fmt = {\n    date: d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()),\n    time: pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())\n};\n\nif (!rec) {\n    msg.result = 'unknown';\n    node.status({ fill: 'red', shape: 'dot', text: msg.scan.uid + ' -> unknown' });\n}\nreturn msg;\n",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 580,
-    "y": 250,
+    "x": 610,
+    "y": 280,
+    "wires": [
+      [
+        "fn_classify"
+      ]
+    ]
+  },
+  {
+    "id": "fn_classify",
+    "type": "function",
+    "z": "f1attend",
+    "name": "classify tap",
+    "func": "// =====================================================================\n//  CLASSIFY THE TAP  -  arrival, late arrival, departure or repeat?\n//\n//  All times come from school-calendar.json (global.calendar), so the\n//  school day is edited in ONE place and both tabs agree.\n//\n//      classStart   \"08:00\"   when the class begins\n//      graceSeconds  600      tap within this of classStart = on time\n//                             (set to 10 for a live demo)\n//      classEnd     \"13:00\"   from here on, a tap means going home\n//\n//  The rule is deliberately state-first, not clock-first:\n//    no IN recorded yet          -> this tap is the ARRIVAL, however late\n//    has IN, no OUT, after end   -> this tap is the DEPARTURE\n//    anything else               -> a repeat tap, acknowledged but not logged\n// =====================================================================\nif (msg.result === 'unknown') { return msg; }\n\nconst cal   = global.get('calendar') || {};\nconst START = cal.classStart   || '08:00';\nconst END   = cal.classEnd     || '13:00';\nconst GRACE = (typeof cal.graceSeconds === 'number') ? cal.graceSeconds : 600;\n\nfunction atClock(sample, hhmm) {\n    const parts = String(hhmm).split(':');\n    const d = new Date(sample.getTime());\n    d.setHours(parseInt(parts[0], 10) || 0,\n               parseInt(parts[1], 10) || 0,\n               parseInt(parts[2], 10) || 0, 0);\n    return d;\n}\n\nconst when        = msg.scan.when;\nconst classStart  = atClock(when, START);\nconst onTimeUntil = new Date(classStart.getTime() + GRACE * 1000);\nconst classEnd    = atClock(when, END);\n\n// --- today's per-student state (reset automatically at midnight) ---\nlet state = flow.get('todayTaps') || {};\nif (state.date !== msg.fmt.date) { state = { date: msg.fmt.date, byUid: {} }; }\nconst rec = state.byUid[msg.scan.uid] || {};\n\nlet direction, status;\n\nif (!rec.in) {\n    direction = 'IN';\n    status    = (when.getTime() <= onTimeUntil.getTime()) ? 'ON_TIME' : 'LATE';\n    rec.in    = msg.fmt.time;\n    rec.inStatus = status;\n    msg.result = (status === 'LATE') ? 'in_late' : 'in_ontime';\n\n} else if (!rec.out && when.getTime() >= classEnd.getTime()) {\n    direction  = 'OUT';\n    status     = 'OUT';\n    rec.out    = msg.fmt.time;\n    msg.result = 'out';\n\n} else {\n    direction  = rec.out ? 'OUT' : 'IN';\n    status     = 'REPEAT';\n    msg.result = 'duplicate';\n}\n\nstate.byUid[msg.scan.uid] = rec;\nflow.set('todayTaps', state);\n\nmsg.tap = {\n    direction:   direction,\n    status:      status,\n    classStart:  START,\n    classEnd:    END,\n    onTimeUntil: onTimeUntil.toTimeString().substring(0, 8),\n    minutesLate: (status === 'LATE')\n        ? Math.round((when.getTime() - classStart.getTime()) / 60000) : 0,\n    arrivedAt:   rec.in  || '',\n    leftAt:      rec.out || ''\n};\n\nnode.status({\n    fill:  (msg.result === 'in_ontime') ? 'green'\n         : (msg.result === 'in_late')   ? 'yellow'\n         : (msg.result === 'out')       ? 'blue' : 'grey',\n    shape: 'dot',\n    text:  msg.student.name + ' -> ' + msg.result\n});\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 790,
+    "y": 280,
     "wires": [
       [
         "sw_result"
@@ -242,13 +349,23 @@
     "id": "sw_result",
     "type": "switch",
     "z": "f1attend",
-    "name": "result?",
+    "name": "which event?",
     "property": "result",
     "propertyType": "msg",
     "rules": [
       {
         "t": "eq",
-        "v": "ok",
+        "v": "in_ontime",
+        "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "in_late",
+        "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "out",
         "vt": "str"
       },
       {
@@ -262,10 +379,22 @@
     ],
     "checkall": "false",
     "repair": false,
-    "outputs": 3,
-    "x": 750,
-    "y": 250,
+    "outputs": 5,
+    "x": 960,
+    "y": 280,
     "wires": [
+      [
+        "fn_csv",
+        "fn_tg",
+        "fn_sheets",
+        "fn_ack"
+      ],
+      [
+        "fn_csv",
+        "fn_tg",
+        "fn_sheets",
+        "fn_ack"
+      ],
       [
         "fn_csv",
         "fn_tg",
@@ -282,12 +411,12 @@
     ]
   },
   {
-    "id": "c_ok",
+    "id": "c_log",
     "type": "comment",
     "z": "f1attend",
-    "name": "3 - Known student: log + notify",
-    "info": "Create attendance/attendance.csv ONCE with this header line:\nDate,Time,StudentID,Name,Class,UID,Device\n\nPaths are relative to the Node-RED userDir. Open the .csv directly in Excel,\nor swap the file node for node-red-contrib-excel-port to write .xlsx.",
-    "x": 900,
+    "name": "3 - Log it",
+    "info": "Create attendance/attendance.csv ONCE with this header:\nDate,Time,StudentID,Name,Class,UID,Device,Direction,Status\n\nDirection is IN or OUT. Status is ON_TIME, LATE or OUT.\nThe Roll Call tab reads these columns, so they must be present.",
+    "x": 1160,
     "y": 100,
     "wires": []
   },
@@ -295,15 +424,15 @@
     "id": "fn_csv",
     "type": "function",
     "z": "f1attend",
-    "name": "Build CSV row",
-    "func": "// ============================================================\n//  One CSV line per attendance record.\n//  Quotes are doubled so names containing commas survive.\n//  Column order must match the header you create once by hand:\n//  Date,Time,StudentID,Name,Class,UID,Device\n// ============================================================\nconst s = msg.student;\nconst f = msg.fmt;\nconst q = function (v) {\n    return '\"' + String(v === null || v === undefined ? '' : v).replace(/\"/g, '\"\"') + '\"';\n};\n\nmsg.payload = [\n    q(f.date),\n    q(f.time),\n    q(s.studentId),\n    q(s.name),\n    q(s.className),\n    q(msg.scan.uid),\n    q(msg.scan.device)\n].join(',');\nreturn msg;\n",
+    "name": "build CSV row",
+    "func": "// One CSV line per real event. Repeat taps are never logged.\n// Column order must match the header:\n//   Date,Time,StudentID,Name,Class,UID,Device,Direction,Status\nconst s = msg.student;\nconst f = msg.fmt;\nconst q = function (v) {\n    return '\"' + String(v === null || v === undefined ? '' : v).replace(/\"/g, '\"\"') + '\"';\n};\n\nmsg.payload = [\n    q(f.date), q(f.time), q(s.studentId), q(s.name), q(s.className),\n    q(msg.scan.uid), q(msg.scan.device), q(msg.tap.direction), q(msg.tap.status)\n].join(',');\nreturn msg;\n",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 940,
+    "x": 1200,
     "y": 150,
     "wires": [
       [
@@ -315,14 +444,14 @@
     "id": "file_csv",
     "type": "file",
     "z": "f1attend",
-    "name": "attendance.csv",
+    "name": "attendance.csv  (SET PATH)",
     "filename": "attendance/attendance.csv",
     "filenameType": "str",
     "appendNewline": true,
     "createDir": true,
     "overwriteFile": "false",
     "encoding": "none",
-    "x": 1150,
+    "x": 1420,
     "y": 150,
     "wires": [
       []
@@ -332,15 +461,15 @@
     "id": "fn_tg",
     "type": "function",
     "z": "f1attend",
-    "name": "Build Telegram message",
-    "func": "// ============================================================\n//  Parent notification via the Telegram Bot API.\n//  No contrib node needed - a plain http request node does it.\n//\n//  SECURITY: keep the bot token OUT of this flow. Set an\n//  environment variable TELEGRAM_BOT_TOKEN before starting\n//  Node-RED, or add it under the flow's \"Environment\" tab.\n// ============================================================\nconst TOKEN = env.get('TELEGRAM_BOT_TOKEN') || 'YOUR_TELEGRAM_BOT_TOKEN';\nif (TOKEN === 'YOUR_TELEGRAM_BOT_TOKEN') {\n    node.warn('TELEGRAM_BOT_TOKEN is not set - notification skipped');\n    return null;\n}\n\nconst s = msg.student;\nif (!s.parentChatId) {\n    node.warn('No parentChatId for ' + s.name + ' - notification skipped');\n    return null;\n}\n\nconst text =\n    'Attendance Alert\\n\\n' +\n    s.name + ' (' + s.studentId + ') has arrived at school at ' +\n    msg.fmt.time + ' on ' + msg.fmt.date + '.\\n' +\n    'Entry point: ' + msg.scan.device;\n\nmsg.method  = 'POST';\nmsg.url     = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = { chat_id: s.parentChatId, text: text };\nreturn msg;\n",
+    "name": "message the parent",
+    "func": "// ============================================================\n//  Parent notification. One builder, four kinds of message.\n//  Token lives on the flow tab -> Environment -> TELEGRAM_BOT_TOKEN.\n// ============================================================\nconst TOKEN = env.get('TELEGRAM_BOT_TOKEN');\nif (!TOKEN) {\n    node.warn('TELEGRAM_BOT_TOKEN is not set - notification skipped');\n    return null;\n}\n\nconst s = msg.student;\nif (!s.parentChatId) {\n    node.warn('No parentChatId for ' + s.name + ' - notification skipped');\n    return null;\n}\n\nconst t    = msg.tap;\nconst name = s.name + ' (' + s.studentId + ')';\n\n// Was this child reported absent earlier today? If so the parent has already had a\n// worrying message, and whatever we send now must visibly close that off -- whether\n// they turned up on time after a reader glitch, or genuinely turned up late.\nconst alerted = global.get('absenceAlerted') || {};\nconst ids     = alerted.ids || [];\nconst wasReportedAbsent = (alerted.date === msg.fmt.date) &&\n                          (ids.indexOf(s.studentId) !== -1);\n\nlet text;\n\nif (msg.result === 'out') {\n    text = 'Left school\\n\\n' + name + ' was recorded leaving at ' + msg.fmt.time +\n           ' on ' + msg.fmt.date + '.' +\n           (t.arrivedAt ? '\\nArrived: ' + t.arrivedAt : '');\n\n} else if (wasReportedAbsent) {\n    // Clears the earlier alarm, and only fires once.\n    text = 'Update: ' + s.name + ' has now arrived at school at ' + msg.fmt.time + '.';\n    if (msg.result === 'in_late') {\n        text += '\\nRecorded as LATE - class started at ' + t.classStart +\n                ' (' + t.minutesLate + ' minute(s) late).';\n    }\n    text += '\\nPlease disregard the earlier absence notice.';\n    global.set('absenceAlerted', {\n        date: alerted.date,\n        ids:  ids.filter(function (id) { return id !== s.studentId; })\n    });\n\n} else if (msg.result === 'in_late') {\n    text = 'LATE ARRIVAL\\n\\n' + name + ' arrived at ' + msg.fmt.time +\n           ' on ' + msg.fmt.date + '.\\nClass started at ' + t.classStart +\n           ' - ' + t.minutesLate + ' minute(s) late.';\n\n} else {\n    text = 'Arrived at school\\n\\n' + name + ' arrived at ' + msg.fmt.time +\n           ' on ' + msg.fmt.date + '.';\n}\n\nmsg.url     = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = { chat_id: s.parentChatId, text: text };\nreturn msg;\n",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 940,
+    "x": 1200,
     "y": 210,
     "wires": [
       [
@@ -352,7 +481,7 @@
     "id": "http_tg",
     "type": "http request",
     "z": "f1attend",
-    "name": "Telegram sendMessage",
+    "name": "Telegram",
     "method": "POST",
     "ret": "obj",
     "paytoqs": "ignore",
@@ -362,9 +491,9 @@
     "proxy": "",
     "insecureHTTPParser": false,
     "authType": "",
-    "senderr": false,
+    "senderr": true,
     "headers": [],
-    "x": 1170,
+    "x": 1420,
     "y": 210,
     "wires": [
       [
@@ -385,7 +514,7 @@
     "targetType": "msg",
     "statusVal": "",
     "statusType": "auto",
-    "x": 1390,
+    "x": 1600,
     "y": 210,
     "wires": []
   },
@@ -393,15 +522,15 @@
     "id": "fn_sheets",
     "type": "function",
     "z": "f1attend",
-    "name": "Build Sheets row (optional)",
-    "func": "// ============================================================\n//  OPTIONAL: mirror the same row into a Google Sheet.\n//\n//  Deploy google-apps-script.gs as a Web App, then set an\n//  environment variable SHEETS_WEBAPP_URL to the /exec URL.\n//  If the variable is missing this branch quietly does nothing.\n// ============================================================\nconst url = env.get('SHEETS_WEBAPP_URL');\nif (!url) { return null; }\n\nconst s = msg.student;\nmsg.method  = 'POST';\nmsg.url     = url;\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    date:      msg.fmt.date,\n    time:      msg.fmt.time,\n    studentId: s.studentId,\n    name:      s.name,\n    className: s.className,\n    uid:       msg.scan.uid,\n    device:    msg.scan.device\n};\nreturn msg;\n",
+    "name": "build Sheets row",
+    "func": "// OPTIONAL: mirror the row into a Google Sheet.\n// Set SHEETS_WEBAPP_URL on the flow tab -> Environment. Empty = branch does nothing.\nconst url = env.get('SHEETS_WEBAPP_URL');\nif (!url) { return null; }\n\nif (url.indexOf('/exec') === -1) {\n    node.error('That URL does not end in /exec. The /dev URL only works for you, ' +\n               'logged in, in a browser. Use Deploy > Manage deployments to get /exec.');\n    return null;\n}\n\nconst s = msg.student;\nmsg.url     = url;\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    date:      msg.fmt.date,\n    time:      msg.fmt.time,\n    studentId: s.studentId,\n    name:      s.name,\n    className: s.className,\n    uid:       msg.scan.uid,\n    device:    msg.scan.device,\n    direction: msg.tap.direction,\n    status:    msg.tap.status\n};\n\n// Apps Script answers a POST with a 302 redirect. Node-RED would re-send the POST\n// to the redirect target, which only accepts GET -- that is the \"405\" error.\n// So we turn auto-following off and do the second hop ourselves.\nmsg.followRedirects = false;\nreturn msg;\n",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 940,
+    "x": 1200,
     "y": 270,
     "wires": [
       [
@@ -413,9 +542,9 @@
     "id": "http_sheets",
     "type": "http request",
     "z": "f1attend",
-    "name": "Google Sheets Web App",
+    "name": "Sheets Web App",
     "method": "POST",
-    "ret": "obj",
+    "ret": "txt",
     "paytoqs": "ignore",
     "url": "",
     "tls": "",
@@ -423,40 +552,23 @@
     "proxy": "",
     "insecureHTTPParser": false,
     "authType": "",
-    "senderr": false,
+    "senderr": true,
     "headers": [],
-    "x": 1180,
+    "x": 1420,
     "y": 270,
     "wires": [
       [
-        "dbg_sheets"
+        "fn_sh_follow"
       ]
     ]
-  },
-  {
-    "id": "dbg_sheets",
-    "type": "debug",
-    "z": "f1attend",
-    "name": "sheets result",
-    "active": false,
-    "tosidebar": true,
-    "console": false,
-    "tostatus": false,
-    "complete": "payload",
-    "targetType": "msg",
-    "statusVal": "",
-    "statusType": "auto",
-    "x": 1390,
-    "y": 270,
-    "wires": []
   },
   {
     "id": "c_ack",
     "type": "comment",
     "z": "f1attend",
     "name": "4 - Answer the reader",
-    "info": "Every tap gets a reply so the LCD can show a verdict.\nMQTT scans are answered on school/attendance/ack.\nHTTP scans are answered in the HTTP response.",
-    "x": 900,
+    "info": "Every tap gets a reply so the LCD can show a verdict and the buzzer can play a matching pattern.\n\nstatus values: in_ontime | in_late | out | duplicate | unknown",
+    "x": 1160,
     "y": 340,
     "wires": []
   },
@@ -464,15 +576,15 @@
     "id": "fn_ack",
     "type": "function",
     "z": "f1attend",
-    "name": "Build LCD ACK",
-    "func": "// ============================================================\n//  Build the two 16-character lines the ESP32 prints on the LCD.\n//  Fed by all three switch outputs, so every tap gets an answer.\n// ============================================================\nconst s = msg.student;\nlet line1, line2;\n\nif (msg.result === 'ok') {\n    line1 = 'Welcome!';\n    line2 = s.name;\n} else if (msg.result === 'duplicate') {\n    line1 = 'Already Tapped';\n    line2 = s ? s.name : msg.scan.uid;\n} else {\n    line1 = 'Unknown Card';\n    line2 = msg.scan.uid;\n}\n\nmsg.topic   = 'school/attendance/ack';\nmsg.payload = {\n    status: msg.result,\n    uid:    msg.scan.uid,\n    name:   s ? s.name : '',\n    line1:  String(line1).substring(0, 16),\n    line2:  String(line2).substring(0, 16)\n};\nreturn msg;\n",
+    "name": "build LCD reply",
+    "func": "// ============================================================\n//  The two 16-character lines the ESP32 prints, plus a status the\n//  firmware turns into a distinct beep pattern.\n// ============================================================\nconst s = msg.student;\nlet line1, line2;\n\nswitch (msg.result) {\n    case 'in_ontime':\n        line1 = 'Welcome!';\n        line2 = s.name;\n        break;\n    case 'in_late':\n        line1 = 'LATE ' + msg.fmt.time;\n        line2 = s.name;\n        break;\n    case 'out':\n        line1 = 'Goodbye!';\n        line2 = s.name;\n        break;\n    case 'duplicate':\n        line1 = 'Already Tapped';\n        line2 = s ? s.name : msg.scan.uid;\n        break;\n    default:\n        line1 = 'Unknown Card';\n        line2 = msg.scan.uid;\n}\n\nmsg.topic   = 'school/attendance/ack';\nmsg.payload = {\n    status:    msg.result,\n    uid:       msg.scan.uid,\n    name:      s ? s.name : '',\n    direction: msg.tap ? msg.tap.direction : '',\n    line1:     String(line1).substring(0, 16),\n    line2:     String(line2).substring(0, 16)\n};\nreturn msg;\n",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 940,
+    "x": 1200,
     "y": 390,
     "wires": [
       [
@@ -498,7 +610,7 @@
     "checkall": "false",
     "repair": false,
     "outputs": 2,
-    "x": 1160,
+    "x": 1420,
     "y": 390,
     "wires": [
       [
@@ -516,7 +628,7 @@
     "name": "HTTP 200",
     "statusCode": "200",
     "headers": {},
-    "x": 1380,
+    "x": 1640,
     "y": 360,
     "wires": []
   },
@@ -534,7 +646,7 @@
     "correl": "",
     "expiry": "",
     "broker": "cfgbroker",
-    "x": 1380,
+    "x": 1640,
     "y": 420,
     "wires": []
   },
@@ -543,25 +655,25 @@
     "type": "comment",
     "z": "f1attend",
     "name": "5 - Unknown cards & errors",
-    "info": "Unregistered UIDs land in attendance/unknown_uids.csv.\nHeader: Date,Time,UID,Device\nCopy a UID from there into students.json to enrol a new student.",
-    "x": 900,
-    "y": 480,
+    "info": "Unregistered UIDs land in attendance/unknown_uids.csv\nHeader: Date,Time,UID,Device\nCopy a UID from there into students.json to enrol a new student.",
+    "x": 1160,
+    "y": 470,
     "wires": []
   },
   {
     "id": "fn_unknown",
     "type": "function",
     "z": "f1attend",
-    "name": "Log unknown UID",
-    "func": "// ============================================================\n//  Unregistered card. Log the UID so you can copy it straight\n//  into students.json and enrol the student.\n//  Header: Date,Time,UID,Device\n// ============================================================\nconst q = function (v) {\n    return '\"' + String(v === null || v === undefined ? '' : v).replace(/\"/g, '\"\"') + '\"';\n};\nmsg.payload = [\n    q(msg.fmt.date),\n    q(msg.fmt.time),\n    q(msg.scan.uid),\n    q(msg.scan.device)\n].join(',');\nreturn msg;\n",
+    "name": "log unknown UID",
+    "func": "// Unregistered card. Log the UID so you can copy it into students.json.\n// Header: Date,Time,UID,Device\nconst q = function (v) {\n    return '\"' + String(v === null || v === undefined ? '' : v).replace(/\"/g, '\"\"') + '\"';\n};\nmsg.payload = [q(msg.fmt.date), q(msg.fmt.time), q(msg.scan.uid), q(msg.scan.device)].join(',');\nreturn msg;\n",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 940,
-    "y": 530,
+    "x": 1200,
+    "y": 520,
     "wires": [
       [
         "file_unknown"
@@ -572,15 +684,15 @@
     "id": "file_unknown",
     "type": "file",
     "z": "f1attend",
-    "name": "unknown_uids.csv",
+    "name": "unknown_uids.csv  (SET PATH)",
     "filename": "attendance/unknown_uids.csv",
     "filenameType": "str",
     "appendNewline": true,
     "createDir": true,
     "overwriteFile": "false",
     "encoding": "none",
-    "x": 1160,
-    "y": 530,
+    "x": 1440,
+    "y": 520,
     "wires": [
       []
     ]
@@ -592,8 +704,8 @@
     "name": "flow errors",
     "scope": null,
     "uncaught": false,
-    "x": 940,
-    "y": 590,
+    "x": 1200,
+    "y": 580,
     "wires": [
       [
         "dbg_err"
@@ -613,25 +725,25 @@
     "targetType": "full",
     "statusVal": "",
     "statusType": "auto",
-    "x": 1140,
-    "y": 590,
+    "x": 1420,
+    "y": 580,
     "wires": []
   },
   {
-    "id": "c_test",
+    "id": "c_creds",
     "type": "comment",
     "z": "f1attend",
-    "name": "6 - Bench test (no hardware needed)",
-    "info": "Click this inject to push a fake scan through the whole flow.\nEdit the uid to test the known / unknown / duplicate paths.",
-    "x": 130,
-    "y": 380,
+    "name": "6 - Telegram & Sheets: set up and test",
+    "info": "Put the token and URL on THIS TAB (double-click the tab -> Environment).\nThen click each test button and watch the debug sidebar.\n\nFull walkthrough: node-red/SETUP-TELEGRAM-AND-SHEETS.md",
+    "x": 190,
+    "y": 430,
     "wires": []
   },
   {
-    "id": "inj_test",
+    "id": "inj_tg_test",
     "type": "inject",
     "z": "f1attend",
-    "name": "Simulate tap A1B2C3D4",
+    "name": "TEST Telegram",
     "props": [
       {
         "p": "payload"
@@ -642,14 +754,780 @@
     "once": false,
     "onceDelay": 0.1,
     "topic": "",
-    "payload": "{\"device\":\"gate-01\",\"uid\":\"A1B2C3D4\",\"timestamp\":\"\"}",
-    "payloadType": "json",
+    "payload": "",
+    "payloadType": "date",
+    "x": 170,
+    "y": 480,
+    "wires": [
+      [
+        "fn_tg_test"
+      ]
+    ]
+  },
+  {
+    "id": "fn_tg_test",
+    "type": "function",
+    "z": "f1attend",
+    "name": "build test message",
+    "func": "// Sends ONE test message, nothing else.\nconst TOKEN = env.get('TELEGRAM_BOT_TOKEN');\nconst CHAT  = env.get('TEST_CHAT_ID');\nif (!TOKEN) { node.error('TELEGRAM_BOT_TOKEN is empty. Flow tab -> Environment.'); return null; }\nif (!CHAT)  { node.error('TEST_CHAT_ID is empty. Flow tab -> Environment.');       return null; }\n\nmsg.url     = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = { chat_id: CHAT, text: 'Test from Node-RED. Telegram is working.' };\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 480,
+    "wires": [
+      [
+        "http_tg_test"
+      ]
+    ]
+  },
+  {
+    "id": "http_tg_test",
+    "type": "http request",
+    "z": "f1attend",
+    "name": "Telegram API",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 580,
+    "y": 480,
+    "wires": [
+      [
+        "dbg_tg_test"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_tg_test",
+    "type": "debug",
+    "z": "f1attend",
+    "name": "TELEGRAM RESULT",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 780,
+    "y": 480,
+    "wires": []
+  },
+  {
+    "id": "inj_sh_test",
+    "type": "inject",
+    "z": "f1attend",
+    "name": "TEST Google Sheets",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
     "x": 180,
+    "y": 540,
+    "wires": [
+      [
+        "fn_sh_test"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sh_test",
+    "type": "function",
+    "z": "f1attend",
+    "name": "build test row",
+    "func": "// Appends ONE test row to your Google Sheet, nothing else.\nconst url = env.get('SHEETS_WEBAPP_URL');\nif (!url) { node.error('SHEETS_WEBAPP_URL is empty. Flow tab -> Environment.'); return null; }\nif (url.indexOf('/exec') === -1) {\n    node.error('That URL does not end in /exec. Use Deploy > Manage deployments.');\n    return null;\n}\n\nmsg.url     = url;\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    date: '2026-09-19', time: '08:00:00', studentId: 'TEST', name: 'Test Row',\n    className: 'Test', uid: 'TESTUID', device: 'node-red-test',\n    direction: 'IN', status: 'ON_TIME'\n};\nmsg.followRedirects = false;\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 540,
+    "wires": [
+      [
+        "http_sh_test"
+      ]
+    ]
+  },
+  {
+    "id": "http_sh_test",
+    "type": "http request",
+    "z": "f1attend",
+    "name": "Sheets Web App",
+    "method": "POST",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 580,
+    "y": 540,
+    "wires": [
+      [
+        "fn_sh_follow"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sh_follow",
+    "type": "function",
+    "z": "f1attend",
+    "name": "follow redirect with GET",
+    "func": "// Apps Script never answers a POST directly. It writes the row, then sends a 302\n// pointing at script.googleusercontent.com where the reply is served.\n// That address accepts GET only -- re-POSTing to it is what produced HTTP 405.\n//\n// Output 1 -> fetch the reply with GET.  Output 2 -> no redirect, pass straight on.\nconst REDIRECTS = [301, 302, 303, 307, 308];\n\nif (REDIRECTS.indexOf(msg.statusCode) !== -1) {\n    const loc = msg.headers && msg.headers.location;\n    if (!loc) { node.error('Google sent a redirect with no Location header.'); return null; }\n    node.status({ fill: 'blue', shape: 'dot', text: 'row sent, fetching reply' });\n    msg.url     = loc;\n    msg.payload = '';\n    delete msg.headers;\n    return [msg, null];\n}\nnode.status({});\nreturn [null, msg];\n",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 800,
+    "y": 600,
+    "wires": [
+      [
+        "http_sh_get"
+      ],
+      [
+        "fn_sh_diag"
+      ]
+    ]
+  },
+  {
+    "id": "http_sh_get",
+    "type": "http request",
+    "z": "f1attend",
+    "name": "GET the reply",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 1020,
+    "y": 600,
+    "wires": [
+      [
+        "fn_sh_diag"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sh_diag",
+    "type": "function",
+    "z": "f1attend",
+    "name": "what went wrong?",
+    "func": "// Turns Google's HTML error pages into a plain-English cause.\nconst status = msg.statusCode;\nconst body   = (typeof msg.payload === 'string') ? msg.payload : JSON.stringify(msg.payload);\n\ntry {\n    const out = JSON.parse(body);\n    node.status({\n        fill:  out.ok ? 'green' : 'red',\n        shape: 'dot',\n        text:  out.ok ? ('OK - wrote row ' + out.row) : ('script said: ' + out.error)\n    });\n    msg.payload = out;\n    return msg;\n} catch (e) {\n    let why;\n    if (/accounts\\.google\\.com|ServiceLogin|Sign in to continue/i.test(body)) {\n        why = 'Google asked for a LOGIN, so your Web App is not public. ' +\n              'Deploy > Manage deployments > pencil icon > Who has access = \"Anyone\" ' +\n              '(NOT \"Anyone with Google account\") > Deploy.';\n    } else if (/Request access|You need access|permission/i.test(body)) {\n        why = 'Google says you need access. Same fix: Who has access = \"Anyone\".';\n    } else if (/Script function not found|doPost/i.test(body)) {\n        why = 'The script has no doPost function. Did you paste google-apps-script.gs and save?';\n    } else {\n        why = 'Not JSON, and not a page I recognise. Open your /exec URL in a ' +\n              'PRIVATE/Incognito browser window - if it does not show {\"ok\":true} ' +\n              'there, the problem is on the Google side, not in Node-RED.';\n    }\n    node.status({ fill: 'red', shape: 'dot', text: 'HTML back (HTTP ' + status + ')' });\n    msg.payload = { ok: false, httpStatus: status, diagnosis: why,\n                    firstBytes: body.substring(0, 160) };\n    return msg;\n}\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 800,
+    "y": 660,
+    "wires": [
+      [
+        "dbg_sh"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_sh",
+    "type": "debug",
+    "z": "f1attend",
+    "name": "SHEETS RESULT",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1010,
+    "y": 660,
+    "wires": []
+  },
+  {
+    "id": "c_cal",
+    "type": "comment",
+    "z": "f2rollcall",
+    "name": "1 - School calendar & hours",
+    "info": "school-calendar.json holds classStart, graceSeconds, classEnd, checkoutGraceSeconds, school days, holidays and excused students.\n\nBOTH tabs read it, so the school day is defined in one place.\nEdit the file, click this inject. No restart.",
+    "x": 190,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "a_inj_cal",
+    "type": "inject",
+    "z": "f2rollcall",
+    "name": "Load calendar",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 90,
+    "wires": [
+      [
+        "a_file_cal"
+      ]
+    ]
+  },
+  {
+    "id": "a_file_cal",
+    "type": "file in",
+    "z": "f2rollcall",
+    "name": "school-calendar.json  (SET PATH)",
+    "filename": "school-calendar.json",
+    "filenameType": "str",
+    "format": "utf8",
+    "chunk": false,
+    "sendError": true,
+    "encoding": "none",
+    "allProps": false,
+    "x": 410,
+    "y": 90,
+    "wires": [
+      [
+        "a_json_cal"
+      ]
+    ]
+  },
+  {
+    "id": "a_json_cal",
+    "type": "json",
+    "z": "f2rollcall",
+    "name": "",
+    "property": "payload",
+    "action": "obj",
+    "pretty": false,
+    "x": 640,
+    "y": 90,
+    "wires": [
+      [
+        "a_set_cal"
+      ]
+    ]
+  },
+  {
+    "id": "a_set_cal",
+    "type": "change",
+    "z": "f2rollcall",
+    "name": "-> global.calendar",
+    "rules": [
+      {
+        "t": "set",
+        "p": "calendar",
+        "pt": "global",
+        "to": "payload",
+        "tot": "msg"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 810,
+    "y": 90,
+    "wires": [
+      [
+        "a_dbg_cal"
+      ]
+    ]
+  },
+  {
+    "id": "a_dbg_cal",
+    "type": "debug",
+    "z": "f2rollcall",
+    "name": "calendar loaded",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1000,
+    "y": 90,
+    "wires": []
+  },
+  {
+    "id": "c_tick",
+    "type": "comment",
+    "z": "f2rollcall",
+    "name": "2 - The clock",
+    "info": "Ticks every 5 s and fires each check ONCE per day, the moment its deadline passes.\n\nA ticker rather than a cron, because the deadlines are computed from school-calendar.json. Change graceSeconds to 10 for a demo and the morning check follows automatically.",
+    "x": 160,
+    "y": 180,
+    "wires": []
+  },
+  {
+    "id": "a_tick",
+    "type": "inject",
+    "z": "f2rollcall",
+    "name": "every 5 s",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 240,
+    "wires": [
+      [
+        "a_fn_sched"
+      ]
+    ]
+  },
+  {
+    "id": "a_inj_absence",
+    "type": "inject",
+    "z": "f2rollcall",
+    "name": "Run MORNING check now",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 190,
+    "y": 300,
+    "wires": [
+      [
+        "a_force_abs"
+      ]
+    ]
+  },
+  {
+    "id": "a_inj_checkout",
+    "type": "inject",
+    "z": "f2rollcall",
+    "name": "Run END OF DAY check now",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 200,
+    "y": 350,
+    "wires": [
+      [
+        "a_force_out"
+      ]
+    ]
+  },
+  {
+    "id": "a_force_abs",
+    "type": "change",
+    "z": "f2rollcall",
+    "name": "force absence",
+    "rules": [
+      {
+        "t": "set",
+        "p": "checkType",
+        "pt": "msg",
+        "to": "absence",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "cutoff",
+        "pt": "msg",
+        "to": "manual",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "today",
+        "pt": "msg",
+        "to": "$substring($string($now()),0,10)",
+        "tot": "jsonata"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 450,
+    "y": 300,
+    "wires": [
+      [
+        "a_file_csv"
+      ]
+    ]
+  },
+  {
+    "id": "a_force_out",
+    "type": "change",
+    "z": "f2rollcall",
+    "name": "force checkout",
+    "rules": [
+      {
+        "t": "set",
+        "p": "checkType",
+        "pt": "msg",
+        "to": "checkout",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "cutoff",
+        "pt": "msg",
+        "to": "manual",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "today",
+        "pt": "msg",
+        "to": "$substring($string($now()),0,10)",
+        "tot": "jsonata"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 450,
+    "y": 350,
+    "wires": [
+      [
+        "a_file_csv"
+      ]
+    ]
+  },
+  {
+    "id": "a_fn_sched",
+    "type": "function",
+    "z": "f2rollcall",
+    "name": "is a check due?",
+    "func": "// =====================================================================\n//  THE CLOCK.\n//\n//  An arrival is an event. An absence is the ABSENCE of an event, so\n//  nothing can trigger on it -- something has to look at the time and ask\n//  \"who is missing?\". This node ticks every few seconds and fires each\n//  check once per day, the moment its deadline passes.\n//\n//  A ticker rather than a fixed cron, because the deadlines are derived\n//  from school-calendar.json. Change graceSeconds to 10 for a live demo\n//  and the check follows automatically - no cron editing.\n//\n//  Out 1 -> absence roll call is due\n//  Out 2 -> checkout roll call is due\n// =====================================================================\nconst cal = global.get('calendar') || {};\nif (!cal.classStart) {\n    node.status({ fill: 'grey', shape: 'ring', text: 'calendar not loaded' });\n    return null;\n}\n\nconst START    = cal.classStart || '08:00';\nconst END      = cal.classEnd   || '13:00';\nconst GRACE    = (typeof cal.graceSeconds === 'number') ? cal.graceSeconds : 600;\nconst OUTGRACE = (typeof cal.checkoutGraceSeconds === 'number') ? cal.checkoutGraceSeconds : 1800;\n\nconst now = new Date();\nconst pad = function (n) { return String(n).padStart(2, '0'); };\nconst today = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());\n\n// --- school day? -----------------------------------------------------\nconst schoolDays = cal.schoolDays || [1, 2, 3, 4, 5];\nif (schoolDays.indexOf(now.getDay()) === -1) {\n    node.status({ fill: 'grey', shape: 'ring', text: 'not a school day' });\n    return null;\n}\nif ((cal.holidays || []).indexOf(today) !== -1) {\n    node.status({ fill: 'grey', shape: 'ring', text: 'school holiday' });\n    return null;\n}\n\nfunction atClock(hhmm) {\n    const p = String(hhmm).split(':');\n    const d = new Date(now.getTime());\n    d.setHours(parseInt(p[0], 10) || 0, parseInt(p[1], 10) || 0, 0, 0);\n    return d;\n}\n\nconst absenceDue  = new Date(atClock(START).getTime() + GRACE * 1000);\nconst checkoutDue = new Date(atClock(END).getTime() + OUTGRACE * 1000);\n\nconst done = flow.get('checksDone') || {};\n\n// A new day re-arms everything.\nif (done.date !== today) {\n    done.date       = today;\n    done.absence    = false;\n    done.checkout   = false;\n    done.absenceDue = 0;\n    done.checkoutDue = 0;\n}\n\n// Deadline moved? That means you edited school-calendar.json and clicked Load\n// calendar -- almost always because you are setting up a demo. Re-arm that check.\n//\n// BUT only if the new deadline is still in the future. Editing the calendar at\n// lunchtime must never re-send this morning's absence alerts to parents.\nif (done.absenceDue !== absenceDue.getTime()) {\n    done.absenceDue = absenceDue.getTime();\n    if (now.getTime() < absenceDue.getTime()) { done.absence = false; }\n}\nif (done.checkoutDue !== checkoutDue.getTime()) {\n    done.checkoutDue = checkoutDue.getTime();\n    if (now.getTime() < checkoutDue.getTime()) { done.checkout = false; }\n}\n\nlet fire = [null, null];\n\nif (!done.absence && now.getTime() >= absenceDue.getTime()) {\n    done.absence = true;\n    fire[0] = { checkType: 'absence', today: today,\n                cutoff: pad(absenceDue.getHours()) + ':' + pad(absenceDue.getMinutes()) +\n                        ':' + pad(absenceDue.getSeconds()) };\n}\nif (!done.checkout && now.getTime() >= checkoutDue.getTime()) {\n    done.checkout = true;\n    fire[1] = { checkType: 'checkout', today: today,\n                cutoff: pad(checkoutDue.getHours()) + ':' + pad(checkoutDue.getMinutes()) +\n                        ':' + pad(checkoutDue.getSeconds()) };\n}\nflow.set('checksDone', done);\n\nconst waiting = [];\nif (!done.absence)  { waiting.push('absence@' + pad(absenceDue.getHours()) + ':' + pad(absenceDue.getMinutes())); }\nif (!done.checkout) { waiting.push('checkout@' + pad(checkoutDue.getHours()) + ':' + pad(checkoutDue.getMinutes())); }\nnode.status({ fill: 'blue', shape: 'ring',\n              text: waiting.length ? ('waiting: ' + waiting.join(', '))\n                                   : 'both done today - use the manual buttons' });\n\nif (!fire[0] && !fire[1]) { return null; }\nreturn fire;\n",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 240,
+    "wires": [
+      [
+        "a_file_csv"
+      ],
+      [
+        "a_file_csv"
+      ]
+    ]
+  },
+  {
+    "id": "a_file_csv",
+    "type": "file in",
+    "z": "f2rollcall",
+    "name": "attendance.csv  (SET PATH)",
+    "filename": "attendance/attendance.csv",
+    "filenameType": "str",
+    "format": "utf8",
+    "chunk": false,
+    "sendError": true,
+    "encoding": "none",
+    "allProps": false,
+    "x": 700,
+    "y": 290,
+    "wires": [
+      [
+        "a_fn_roll"
+      ]
+    ]
+  },
+  {
+    "id": "a_fn_roll",
+    "type": "function",
+    "z": "f2rollcall",
+    "name": "who do we chase?",
+    "func": "// =====================================================================\n//  ROLL CALL  -  runs for both checks.\n//\n//    checkType 'absence'  : who has no IN row today?\n//    checkType 'checkout' : who has an IN but no OUT row today?\n//\n//  Reads attendance.csv rather than trusting memory, so a Node-RED\n//  restart cannot make the whole school look absent.\n//\n//  Out 1 -> one message per student to chase\n//  Out 2 -> one summary for the school office\n// =====================================================================\nconst roster = global.get('students') || {};\nconst cal    = global.get('calendar')  || {};\nconst check  = msg.checkType || 'absence';\nconst today  = msg.today;\nconst cutoff = msg.cutoff || '';\n\nfunction parseCsvLine(line) {\n    const out = [];\n    let cur = '', inQuotes = false;\n    for (let i = 0; i < line.length; i++) {\n        const c = line[i];\n        if (inQuotes) {\n            if (c === '\"') {\n                if (line[i + 1] === '\"') { cur += '\"'; i++; }\n                else { inQuotes = false; }\n            } else { cur += c; }\n        } else {\n            if (c === '\"') { inQuotes = true; }\n            else if (c === ',') { out.push(cur); cur = ''; }\n            else { cur += c; }\n        }\n    }\n    out.push(cur);\n    return out;\n}\n\n// Columns: Date,Time,StudentID,Name,Class,UID,Device,Direction,Status\nconst csv = (typeof msg.payload === 'string') ? msg.payload : '';\nconst inAt = {}, outAt = {}, lateAt = {};\ncsv.split(/\\r?\\n/).forEach(function (line) {\n    if (!line.trim()) { return; }\n    const c = parseCsvLine(line);\n    if (c.length < 8) { return; }\n    if (c[0] !== today) { return; }\n    const uid = c[5], dir = c[7], st = c[8];\n    if (dir === 'IN')  { inAt[uid] = c[1]; if (st === 'LATE') { lateAt[uid] = c[1]; } }\n    if (dir === 'OUT') { outAt[uid] = c[1]; }\n});\n\nconst excusedToday = (cal.excused && cal.excused[today]) || [];\nconst rosterUids = Object.keys(roster).filter(function (k) { return k.charAt(0) !== '_'; });\nconst rosterCount = rosterUids.length;\nconst inCount  = Object.keys(inAt).length;\nconst outCount = Object.keys(outAt).length;\n\nif (rosterCount === 0) {\n    node.error('Roster is empty - students.json did not load. Nothing sent.');\n    return null;\n}\n\n// --- SAFETY GUARD ----------------------------------------------------\n// Nobody tapped at all? Far more likely the reader died than that the whole\n// school is missing. Never message parents on that.\nconst observed = (check === 'absence') ? inCount : outCount;\nif (observed === 0) {\n    node.status({ fill: 'red', shape: 'dot', text: 'no ' + check + ' taps - parents NOT notified' });\n    return [null, { payload: {\n        checkType: check, date: today, aborted: true,\n        reason: (check === 'absence')\n            ? 'No arrivals were recorded at all today. The gate reader is probably ' +\n              'offline. No parent was notified.'\n            : 'No departures were recorded at all today. Either nobody has tapped out ' +\n              'yet or the reader is offline. No parent was notified.',\n        rosterCount: rosterCount, inCount: inCount, outCount: outCount\n    }}];\n}\n\n// --- who are we chasing? ---------------------------------------------\nconst chase = [];\nrosterUids.forEach(function (uid) {\n    const s = roster[uid];\n    if (excusedToday.indexOf(s.studentId) !== -1) { return; }\n\n    if (check === 'absence') {\n        if (inAt[uid]) { return; }                    // arrived\n    } else {\n        if (!inAt[uid]) { return; }                   // never arrived - not our problem here\n        if (outAt[uid]) { return; }                   // already left\n    }\n    chase.push({\n        uid: uid, studentId: s.studentId, name: s.name, className: s.className,\n        parentChatId: s.parentChatId, arrivedAt: inAt[uid] || ''\n    });\n});\n\nconst minRatio   = (typeof cal.minPresentRatio === 'number') ? cal.minPresentRatio : 0.3;\nconst lowTurnout = (check === 'absence') && ((inCount / rosterCount) < minRatio);\n\nif (check === 'absence') {\n    global.set('absenceAlerted', {\n        date: today,\n        ids:  chase.map(function (a) { return a.studentId; })\n    });\n}\n\nnode.status({\n    fill:  chase.length ? 'yellow' : 'green',\n    shape: 'dot',\n    text:  check + ': ' + chase.length + ' to chase'\n});\n\nconst alerts = chase.map(function (a) {\n    return { student: a, today: today, cutoff: cutoff, checkType: check, payload: {} };\n});\n\nconst nameOf = function (uid) { return roster[uid] ? roster[uid].name : uid; };\n\nconst lateNames = Object.keys(lateAt).map(function (uid) {\n    return nameOf(uid) + ' (' + lateAt[uid] + ')';\n});\n\n// Who the counts are actually made of. Printed in the summary so the numbers can\n// always be checked against names, instead of having to open the CSV.\nconst arrivedList = Object.keys(inAt).sort().map(function (uid) {\n    return nameOf(uid) + ' ' + inAt[uid];\n});\nconst leftList = Object.keys(outAt).sort().map(function (uid) {\n    return nameOf(uid) + ' ' + outAt[uid];\n});\n\nconst summary = { payload: {\n    checkType:   check,\n    date:        today,\n    cutoff:      cutoff,\n    rosterCount: rosterCount,\n    inCount:     inCount,\n    outCount:    outCount,\n    chaseCount:  chase.length,\n    lowTurnout:  lowTurnout,\n    late:        lateNames,\n    arrivedList: arrivedList,\n    leftList:    leftList,\n    chase:       chase.map(function (a) { return a.name + ' (' + a.studentId + ')'; })\n}};\n\nreturn [alerts, summary];\n",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 950,
+    "y": 290,
+    "wires": [
+      [
+        "a_fn_msg"
+      ],
+      [
+        "a_fn_summary"
+      ]
+    ]
+  },
+  {
+    "id": "c_notify",
+    "type": "comment",
+    "z": "f2rollcall",
+    "name": "3 - Notify",
+    "info": "NOTIFY_PARENTS and NOTIFY_NOT_CHECKED_OUT both start at \"false\".\nThe office still gets its summary. Watch it for a few real days, then switch them on.",
+    "x": 900,
+    "y": 380,
+    "wires": []
+  },
+  {
+    "id": "a_fn_msg",
+    "type": "function",
+    "z": "f2rollcall",
+    "name": "message each parent",
+    "func": "// Message to ONE parent, for either check.\n//\n// Wording matters. It says we have no RECORD -- it does not assert where the\n// child is, because a forgotten card looks identical to a real absence.\nconst TOKEN = env.get('TELEGRAM_BOT_TOKEN');\nif (!TOKEN) { node.warn('TELEGRAM_BOT_TOKEN not set on this tab - nothing sent'); return null; }\n\nconst check = msg.checkType;\n\n// Safety switch. Leave these \"false\" until you have watched the summaries for a\n// few real days. Until then only the office is told.\nconst flagName = (check === 'absence') ? 'NOTIFY_PARENTS' : 'NOTIFY_NOT_CHECKED_OUT';\nif (String(env.get(flagName)).toLowerCase() !== 'true') {\n    node.status({ fill: 'blue', shape: 'ring', text: 'dry run (' + flagName + '=false)' });\n    return null;\n}\n\nconst s = msg.student;\nif (!s.parentChatId) { node.warn('No parentChatId for ' + s.name); return null; }\n\nconst school  = env.get('SCHOOL_NAME') || 'school';\nconst contact = env.get('SCHOOL_CONTACT') || '';\nconst name    = s.name + ' (' + s.studentId + ')';\nlet text;\n\nif (check === 'absence') {\n    text = 'Attendance Notice\\n\\n' +\n           'We have no record of ' + name + ' arriving at ' + school +\n           ' as of ' + msg.cutoff + ' today, ' + msg.today + '.\\n\\n' +\n           'If your child is absent for a reason already known to us, please ignore ' +\n           'this message. Otherwise please contact the school office.';\n} else {\n    text = 'Still at school\\n\\n' +\n           name + ' arrived at ' + (s.arrivedAt || 'an unrecorded time') +\n           ' but has not been recorded leaving ' + school +\n           ' as of ' + msg.cutoff + ' today.\\n\\n' +\n           'This often just means the card was not tapped on the way out. ' +\n           'Please contact the school office if you expected them home.';\n}\n\nif (contact) { text += '\\n\\n' + contact; }\n\nmsg.url     = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = { chat_id: s.parentChatId, text: text };\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 950,
     "y": 430,
     "wires": [
       [
-        "fn_norm"
+        "a_http_parent"
       ]
+    ]
+  },
+  {
+    "id": "a_http_parent",
+    "type": "http request",
+    "z": "f2rollcall",
+    "name": "Telegram",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 1170,
+    "y": 430,
+    "wires": [
+      [
+        "a_dbg_parent"
+      ]
+    ]
+  },
+  {
+    "id": "a_dbg_parent",
+    "type": "debug",
+    "z": "f2rollcall",
+    "name": "parent result",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1350,
+    "y": 430,
+    "wires": []
+  },
+  {
+    "id": "a_fn_summary",
+    "type": "function",
+    "z": "f2rollcall",
+    "name": "summary for the office",
+    "func": "// Summary for the school office. Always sends, even on a dry run --\n// a human should see the result either way.\nconst TOKEN = env.get('TELEGRAM_BOT_TOKEN');\nconst CHAT  = env.get('ADMIN_CHAT_ID');\nif (!TOKEN || !CHAT) { node.warn('TELEGRAM_BOT_TOKEN or ADMIN_CHAT_ID not set'); return null; }\n\nconst p     = msg.payload;\nconst check = p.checkType;\nlet text;\n\nif (p.aborted) {\n    text = 'ATTENDANCE SYSTEM WARNING - ' + p.date + '\\n\\n' + p.reason;\n} else if (check === 'absence') {\n    const dry = String(env.get('NOTIFY_PARENTS')).toLowerCase() !== 'true';\n    text = 'MORNING ROLL CALL  ' + p.date + '\\n' +\n           'cutoff ' + p.cutoff + '\\n\\n' +\n           'Arrived: ' + p.inCount + ' of ' + p.rosterCount + '\\n' +\n           'Absent : ' + p.chaseCount + '\\n';\n    if (p.arrivedList && p.arrivedList.length && p.arrivedList.length <= 12) {\n        text += '\\nArrived:\\n' +\n                p.arrivedList.map(function (a) { return '- ' + a; }).join('\\n') + '\\n';\n    }\n    if (p.late.length) {\n        text += '\\nLate:\\n' + p.late.map(function (a) { return '- ' + a; }).join('\\n') + '\\n';\n    }\n    if (p.chaseCount) {\n        text += '\\nNo record of arrival:\\n' +\n                p.chase.map(function (a) { return '- ' + a; }).join('\\n') + '\\n';\n    }\n    if (p.lowTurnout) {\n        text += '\\nNOTE: turnout is unusually low. Check the gate reader before acting.\\n';\n    }\n    text += p.chaseCount === 0\n        ? '\\nFull attendance. Nothing to send.'\n        : (dry ? '\\n(Dry run - parents NOT messaged. Set NOTIFY_PARENTS=true when ready.)'\n               : '\\nParents of absent students have been notified.');\n} else {\n    const dry = String(env.get('NOTIFY_NOT_CHECKED_OUT')).toLowerCase() !== 'true';\n    text = 'END OF DAY CHECK  ' + p.date + '\\n' +\n           'cutoff ' + p.cutoff + '\\n\\n' +\n           'Arrived today : ' + p.inCount + '\\n' +\n           'Tapped out    : ' + p.outCount + '\\n' +\n           'Still on site : ' + p.chaseCount + '\\n';\n    // Counts come from EVERY row dated today, which includes earlier test runs.\n    // Listing the names makes that obvious instead of surprising.\n    if (p.arrivedList && p.arrivedList.length && p.arrivedList.length <= 12) {\n        text += '\\nArrived today:\\n' +\n                p.arrivedList.map(function (a) { return '- ' + a; }).join('\\n') + '\\n';\n    }\n    if (p.leftList && p.leftList.length && p.leftList.length <= 12) {\n        text += '\\nTapped out:\\n' +\n                p.leftList.map(function (a) { return '- ' + a; }).join('\\n') + '\\n';\n    }\n    if (p.chaseCount) {\n        text += '\\nNo record of leaving:\\n' +\n                p.chase.map(function (a) { return '- ' + a; }).join('\\n') + '\\n';\n    }\n    text += p.chaseCount === 0\n        ? '\\nEveryone who arrived has left. Nothing to send.'\n        : (dry ? '\\n(Dry run - parents NOT messaged. Set NOTIFY_NOT_CHECKED_OUT=true when ready.)'\n               : '\\nParents have been notified.');\n}\n\nmsg.url     = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = { chat_id: CHAT, text: text };\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 960,
+    "y": 500,
+    "wires": [
+      [
+        "a_http_admin"
+      ]
+    ]
+  },
+  {
+    "id": "a_http_admin",
+    "type": "http request",
+    "z": "f2rollcall",
+    "name": "Telegram",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 1170,
+    "y": 500,
+    "wires": [
+      [
+        "a_dbg_admin"
+      ]
+    ]
+  },
+  {
+    "id": "a_dbg_admin",
+    "type": "debug",
+    "z": "f2rollcall",
+    "name": "admin result",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1350,
+    "y": 500,
+    "wires": []
+  },
+  {
+    "id": "c_reset",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "7 - DEMO RESET (erases today)",
+    "info": "Wipes attendance.csv and clears today's per-student state so a rehearsal starts clean.\n\nWhy you need it: the roll call counts every row in the CSV dated today. Two demo runs in one afternoon and the second summary still includes the first run's taps - the numbers look wrong when they are actually right.\n\nDO NOT press this on a real school day.",
+    "x": 200,
+    "y": 720,
+    "wires": []
+  },
+  {
+    "id": "inj_reset",
+    "type": "inject",
+    "z": "f1attend",
+    "name": "DEMO RESET - wipe today",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 190,
+    "y": 770,
+    "wires": [
+      [
+        "fn_reset"
+      ]
+    ]
+  },
+  {
+    "id": "fn_reset",
+    "type": "function",
+    "z": "f1attend",
+    "name": "clear state + CSV header",
+    "func": "// =====================================================================\n//  DEMO RESET  -  wipe today and start the day over.\n//\n//  >>> THIS ERASES attendance.csv <<<  Everything logged today is lost.\n//  It exists so a rehearsal starts from a clean slate. Do not press it on a\n//  real school day.\n//\n//  It clears three things that otherwise carry over between demo runs:\n//    attendance.csv      the roll call counts EVERY row dated today, so an\n//                        earlier run's taps keep showing up in the totals\n//    flow.todayTaps      per-student IN/OUT state, which decides whether the\n//                        next tap is an arrival or a departure\n//    global.absenceAlerted  who was reported absent, used for the correction\n//                        message when they turn up late\n// =====================================================================\nflow.set('todayTaps', null);\nflow.set('bounce', null);\nglobal.set('absenceAlerted', null);\n\n// Rewrite the CSV with just its header row. The file node below is set to\n// OVERWRITE, not append.\nmsg.payload = 'Date,Time,StudentID,Name,Class,UID,Device,Direction,Status';\n\nnode.warn('DEMO RESET: attendance.csv erased and today\\'s state cleared.');\nnode.status({ fill: 'red', shape: 'dot', text: 'today wiped' });\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 430,
+    "y": 770,
+    "wires": [
+      [
+        "file_reset"
+      ]
+    ]
+  },
+  {
+    "id": "file_reset",
+    "type": "file",
+    "z": "f1attend",
+    "name": "attendance.csv  OVERWRITE  (SET PATH)",
+    "filename": "attendance/attendance.csv",
+    "filenameType": "str",
+    "appendNewline": true,
+    "createDir": true,
+    "overwriteFile": "true",
+    "encoding": "none",
+    "x": 720,
+    "y": 770,
+    "wires": [
+      []
     ]
   }
 ]

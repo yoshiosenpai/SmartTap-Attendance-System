@@ -8,39 +8,73 @@
  *   the Node-RED flow free of Google credentials.
  *
  * SETUP
- *   1. Create a Google Sheet. Name the first tab "Attendance".
- *   2. Row 1 headers:  Date | Time | StudentID | Name | Class | UID | Device
- *   3. Extensions -> Apps Script. Delete the sample code, paste this file, save.
- *   4. Deploy -> New deployment -> type "Web app".
- *        Execute as        : Me
- *        Who has access    : Anyone with the link
- *      Authorise when prompted, then copy the /exec URL.
- *   5. Before starting Node-RED, set the environment variable:
- *        Linux/macOS :  export SHEETS_WEBAPP_URL="https://script.google.com/.../exec"
- *        Windows     :  setx SHEETS_WEBAPP_URL "https://script.google.com/.../exec"
+ *   1. Create a Google Sheet.
+ *   2. Extensions -> Apps Script. Delete the sample code, paste this file, save.
+ *   3. Deploy -> New deployment -> type "Web app".
+ *        Execute as     : Me
+ *        Who has access : Anyone        <-- NOT "Anyone with Google account"
+ *      Authorise when prompted (click Advanced -> Go to ... (unsafe) -> Allow),
+ *      then copy the /exec URL.
+ *   4. Paste that URL into the Node-RED flow tab -> Environment -> SHEETS_WEBAPP_URL.
+ *
+ * CHECK IT
+ *   Open the /exec URL in an INCOGNITO window. You should see JSON listing the tabs
+ *   in your spreadsheet and which one this script will write to.
+ *
+ * AFTER ANY EDIT TO THIS FILE
+ *   Saving is NOT enough. Deploy -> Manage deployments -> pencil icon ->
+ *   Version: New version -> Deploy. Otherwise the web app keeps running the old code.
  *
  * SECURITY NOTE
  *   "Anyone with the link" means anyone who learns the URL can append rows.
- *   The SHARED_SECRET below closes that gap - set the same value in Node-RED's
- *   "Build Sheets row" function (add secret: 'your-secret' to msg.payload).
+ *   Set SHARED_SECRET below to a long random string to stop that, and add the same
+ *   value to the Node-RED "Build Sheets row" function as  msg.payload.secret.
  *   Treat the /exec URL itself as a password: never commit it to a public repo.
  */
 
+// The tab this script writes to. If no tab has this name, it falls back to the FIRST
+// tab in the spreadsheet, so a renamed or localised tab does not break attendance
+// logging. The reply always tells you which tab it actually used.
 var SHEET_NAME    = 'Attendance';
-var SHARED_SECRET = '';   // leave '' to disable the check, or set a long random string
+
+var HEADERS       = ['Date', 'Time', 'StudentID', 'Name', 'Class', 'UID', 'Device'];
+
+var SHARED_SECRET = '';   // '' disables the check
+
+
+/** Returns the sheet to write to, falling back to the first tab. */
+function getSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.getSheets()[0];      // graceful fallback
+  }
+  return sheet;
+}
+
+/** Writes the header row if the sheet is completely empty. */
+function ensureHeaders_(sheet) {
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(HEADERS);
+    return true;
+  }
+  return false;
+}
 
 function doPost(e) {
   try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return reply({ ok: false, error: 'no POST body received' });
+    }
+
     var body = JSON.parse(e.postData.contents);
 
     if (SHARED_SECRET && body.secret !== SHARED_SECRET) {
       return reply({ ok: false, error: 'bad secret' });
     }
 
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-    if (!sheet) {
-      return reply({ ok: false, error: 'sheet "' + SHEET_NAME + '" not found' });
-    }
+    var sheet = getSheet_();
+    var addedHeaders = ensureHeaders_(sheet);
 
     sheet.appendRow([
       body.date      || '',
@@ -52,16 +86,40 @@ function doPost(e) {
       body.device    || ''
     ]);
 
-    return reply({ ok: true, row: sheet.getLastRow() });
+    return reply({
+      ok:           true,
+      row:          sheet.getLastRow(),
+      sheet:        sheet.getName(),
+      wroteHeaders: addedHeaders
+    });
 
   } catch (err) {
     return reply({ ok: false, error: String(err) });
   }
 }
 
-/** Lets you confirm the deployment is live by opening the /exec URL in a browser. */
+/**
+ * Open the /exec URL in a browser to check the deployment. It lists the tabs in your
+ * spreadsheet and the one that will be written to, which makes a wrong tab name
+ * obvious straight away.
+ */
 function doGet() {
-  return reply({ ok: true, service: 'rfid-attendance-sheets-bridge' });
+  try {
+    var ss     = SpreadsheetApp.getActiveSpreadsheet();
+    var names  = ss.getSheets().map(function (s) { return s.getName(); });
+    var target = getSheet_();
+
+    return reply({
+      ok:            true,
+      service:       'rfid-attendance-sheets-bridge',
+      spreadsheet:   ss.getName(),
+      tabsFound:     names,
+      willWriteTo:   target.getName(),
+      exactNameUsed: names.indexOf(SHEET_NAME) !== -1
+    });
+  } catch (err) {
+    return reply({ ok: false, error: String(err) });
+  }
 }
 
 function reply(obj) {

@@ -6,6 +6,52 @@ Backend: **Mosquitto MQTT** + **Node-RED** + **CSV/Excel** + **Telegram**
 
 ---
 
+## 0. Your configuration
+
+Everything below is already filled in for this build. Nothing here needs editing to run.
+
+| | |
+|---|---|
+| **Wi-Fi SSID** | `Cytron` — a **Windows Mobile Hotspot** on the server PC |
+| **Server / broker IP** | `192.168.137.1` — fixed by Windows, never changes |
+| **MQTT broker** | Mosquitto on that PC, port `1883` |
+| **Node-RED** | Same PC, `http://192.168.137.1:1880` |
+| **RFID library** | `MFRC522v2` by GithubCommunity — **not** the older `MFRC522` |
+| **Buzzer** | Onboard passive piezo, GPIO26 (mute switch must be ON) |
+| **Cards enrolled** | `B96DF306` `97513A25` `8EEB2907` `295E5514` |
+| **Telegram** | One chat id on all four cards, so every tap messages you while testing |
+
+### ⚠️ One topology note that matters
+
+Your PC is **both the Wi-Fi access point and the server**. That is a genuinely good
+setup for a demo — no school network, no IT request, and `192.168.137.1` is hard-wired
+by Windows so you never chase a DHCP lease. Two consequences:
+
+- **The hotspot must be on before the ESP32 boots.** If the PC sleeps or Windows times
+  the hotspot out, the reader shows `Server...` and stops logging. Turn off sleep on
+  that machine for a live demo.
+- **Windows Firewall will block port 1883 on the hotspot adapter** until you add a rule.
+  This is the single most common reason the ESP32 never connects —
+  [node-red/README.md §4](node-red/README.md#4-install-the-mqtt-broker) has the command.
+
+### Where the credentials live
+
+| File | Contents | Share it? |
+|---|---|---|
+| `firmware/secrets.h` | **Real** Wi-Fi password and broker IP | ❌ never |
+| `firmware/secrets.h.example` | Placeholders only | ✅ yes |
+| `.gitignore` | Already excludes `secrets.h` and `*.csv` | ✅ |
+| `node-red/students.json` | Real UIDs + Telegram chat ids | ❌ never |
+
+The Telegram **bot token** is deliberately *not* in any file — it comes from an
+environment variable, so it never lands in an exported flow. See
+[node-red/README.md §9](node-red/README.md#9-set-up-the-telegram-bot).
+
+If this project ever goes anywhere public, change the Wi-Fi password first — it is
+written in plain text in `secrets.h`.
+
+---
+
 ## 1. System architecture
 
 ```
@@ -70,8 +116,21 @@ order — `SDA, SCK, MOSI, MISO, IRQ, GND, RST, 3.3V` — and it ships **loose, 
 | `MISO` | **GPIO19** | VSPI data in |
 | `IRQ` | *not connected* | Not used — the sketch polls instead |
 | `GND` | **GND** | |
-| `RST` | **GPIO27** | |
+| `RST` | **3V3** (or leave unconnected) | ⚠️ See the note below — do **not** wire this to GPIO21 |
 | `3.3V` | **3V3** | ⚠️ **3.3 V ONLY — 5 V destroys the RC522** |
+
+**About `RST`:** the MFRC522v2 library's SPI driver has no reset-pin parameter at all —
+it resets the chip in software over SPI, so RST needs no GPIO.
+
+**Recommended: tie `RST` to `3V3`.** Left floating it relies on the chip's internal
+pull-up, and the RC522 can then still be coming out of reset when the ESP32 first probes
+it — you get a `version = 0xFF` warning at boot even though cards scan perfectly a second
+later. Pinning RST high makes that deterministic and the warning goes away.
+
+⚠️ The Random Nerd Tutorials guide wires `RST` to **GPIO21** (its sketch never actually
+references the pin). **Do not copy that into this project — GPIO21 is our LCD's SDA
+line.** Putting the reader's reset pin on the I2C data line breaks the display and can
+hold the reader in reset, which looks exactly like "nothing works".
 
 ### 2.2 I2C 16x2 LCD → ESP32
 
@@ -125,11 +184,12 @@ before touching the main project — see §3.6.
 
 ```
  5  RC522 SS      18  RC522 SCK     21  LCD SDA      26  onboard buzzer
-19  RC522 MISO    23  RC522 MOSI    22  LCD SCL      27  RC522 RST
+19  RC522 MISO    23  RC522 MOSI    22  LCD SCL      (RST not wired)
 ```
 
-Still free for expansion (LEDs, extra sensors): **2, 12, 13, 16, 17, 25, 32, 33**
-and input-only **34, 35, 36, 39**. GPIO25 is free again now that the buzzer is onboard.
+Still free for expansion (LEDs, extra sensors): **2, 12, 13, 16, 17, 25, 27, 32, 33**
+and input-only **34, 35, 36, 39**. GPIO25 is free because the buzzer is onboard, and
+GPIO27 is free because MFRC522v2 does not use a reset pin.
 
 ### 2.5 Safety rules that shaped these choices
 
@@ -204,7 +264,7 @@ Arduino IDE → **Tools → Manage Libraries**, then install:
 
 | Library | Author | What it does |
 |---|---|---|
-| **MFRC522** | GithubCommunity | Drives the RC522 over SPI; gives you `uid.uidByte` |
+| **MFRC522v2** | GithubCommunity | Drives the RC522 over SPI; gives you `uid.uidByte` |
 | **LiquidCrystal I2C** | Frank de Brabander | 16x2 LCD over two wires |
 | **PubSubClient** | Nick O'Leary | MQTT publish/subscribe |
 | **ArduinoJson** (7.x) | Benoit Blanchon | Builds the payload, parses the ACK |
@@ -212,20 +272,54 @@ Arduino IDE → **Tools → Manage Libraries**, then install:
 `WiFi.h`, `SPI.h`, `Wire.h` and `time.h` come with the ESP32 board package — nothing
 to install for those.
 
+> ### ⚠️ Search for **`MFRC522v2`**, not `MFRC522`
+>
+> There are two different libraries with nearly the same name, both by GithubCommunity:
+>
+> | | |
+> |---|---|
+> | **`MFRC522`** (v1, `miguelbalboa`) | The old one. Archived upstream. `MFRC522 rfid(ssPin, rstPin);` |
+> | **`MFRC522v2`** (`OSSLibraries`) | The current one, and what these sketches use. Three-object setup. |
+>
+> Their APIs are **not compatible** — code for one will not compile against the other.
+> This project uses **v2**, the same library as the Random Nerd Tutorials ESP32 guide.
+> If you get errors like `no matching function for call to 'MFRC522::MFRC522(int, int)'`
+> or `'PCD_DumpVersionToSerial' is not a member`, you have the wrong one installed.
+>
+> Having both installed at once also causes trouble. Remove the old `MFRC522` folder
+> from your `Arduino/libraries/` directory if it is there.
+
+**What v2 looks like.** Instead of one constructor taking two pins, you build three
+objects — a chip-select pin, a bus driver, then the reader:
+
+```cpp
+MFRC522DriverPinSimple ssPin(5);      // chip select
+MFRC522DriverSPI       driver{ssPin}; // SPI bus driver
+MFRC522                rfid{driver};  // the reader
+```
+
+Everything after that is the same: `PICC_IsNewCardPresent()`, `PICC_ReadCardSerial()`,
+`uid.uidByte[]` and `uid.size` all keep their old names, which is why the UID handling
+code transferred across unchanged.
+
 Board setting: **ESP32 Dev Module**, 115200 baud.
 
 ### 3.2 What to edit before uploading
 
-Everything private lives in `secrets.h` — the `.ino` needs no edits to run:
+**Nothing.** `secrets.h` is already filled in with your Wi-Fi and broker details, and
+the `.ino` reads everything from there. Open the sketch and hit Upload.
+
+You only need to touch `secrets.h` if something changes:
 
 ```cpp
-const char* ssid     = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
-#define MQTT_HOST "192.168.1.100"
+const char* ssid     = "Cytron";            // your Windows hotspot
+#define MQTT_HOST "192.168.137.1"           // that same PC
+#define MQTT_USER ""                        // fill in when you password the broker
 ```
 
 ⚠️ Changing Wi-Fi credentials, the MQTT host, or any GPIO define means re-uploading.
-Keep `secrets.h` out of GitHub and out of anything you hand to students.
+`secrets.h` holds a real password — it is in `.gitignore`, keep it that way, and hand
+out `secrets.h.example` instead.
 
 ### 3.3 How the sketch stays non-blocking
 
@@ -301,6 +395,65 @@ clicks once and then goes quiet.
 
 The note sequencer in the test sketch is the same non-blocking pattern the main project
 uses, so anything you like here transfers straight across.
+
+### 3.7 Testing all three modules together, with no network
+
+[`firmware/HardwareTest/HardwareTest.ino`](firmware/HardwareTest/HardwareTest.ino) runs
+the **complete gate experience offline** — reader, LCD and buzzer, no Wi-Fi, no MQTT, no
+`secrets.h`, nothing to configure. Only two libraries: MFRC522 and LiquidCrystal I2C.
+
+**Do this before you add networking.** It is worth the twenty minutes, because from then
+on you can answer the most useful debugging question there is: *did this ever work?* If
+the full project misbehaves later and this sketch still runs clean, the fault is in the
+network layer and you can stop staring at your wiring.
+
+A small student table inside the sketch stands in for the Node-RED lookup:
+
+```cpp
+const Student STUDENTS[] = {
+  { "A1B2C3D4", "Ali Bin Ahmad"  },
+  { "0D5E6F7A", "Siti Nurhaliza" },
+};
+```
+
+so **known, unknown and repeat taps all behave exactly as they will in the finished
+system**. The repeat window is 10 seconds here rather than 5 minutes, so you can actually
+test that path without waiting around.
+
+**At boot it self-tests and tells you what is wrong:**
+
+```
+[I2C] scanning...
+[I2C]   device at 0x27  <- the LCD, as expected
+[RC522] VersionReg = 0x92  OK
+```
+
+A bad reader prints `BAD` followed by the three things that actually cause it. A missing
+LCD prints `NOTHING FOUND` and what to check. The LCD itself shows `READER FAULT` if the
+RC522 did not answer, so you get the diagnosis without a laptop attached.
+
+**Every tap prints a full trace:**
+
+```
+[TAP #3] UID 0D5E6F7A  (4 bytes)
+   result : OK -> Siti Nurhaliza
+   would send: {"device":"gate-01","uid":"0D5E6F7A"}
+```
+
+and for a card it doesn't know, the exact line to paste in to enrol it:
+
+```
+   result : UNKNOWN card
+   to enrol it, add this line to STUDENTS[] and re-upload:
+     { "DEADBEEF", "Student Name" },
+```
+
+**Serial commands:** `l` list students · `c` clear the repeat-tap memory · `i` re-scan
+I2C · `v` re-check the RC522 · `b` play the four result sounds · `r` reset counters ·
+`m` menu.
+
+The idle screen doubles as a scoreboard (`OK:4 Unk:1`) so you can run a whole class
+through it and see the tally without a serial cable.
 
 ---
 
@@ -405,52 +558,25 @@ Quoting is doubled so a name like `Tan, Wei Ming` cannot shift the columns.
 
 ---
 
-## 5. Setup, step by step
+## 5. Setting up the backend
 
-### 5.1 Broker
+The full server-side walkthrough — installing Node-RED and Mosquitto, configuring the
+broker so the ESP32 can actually reach it, importing the flow, wiring up Telegram and
+Google Sheets, and running it as a service — lives in its own guide:
 
-```bash
-sudo apt install mosquitto mosquitto-clients
-```
+### 📘 **[node-red/README.md](node-red/README.md)** — Node-RED Setup Guide
 
-Windows: install from mosquitto.org, then allow port 1883 through the firewall.
-For a school network, add a username/password rather than running it anonymously.
+Do that first. The flow ships with a **simulate** button, so you can have the whole
+backend working (CSV rows appearing, Telegram messages arriving) before the ESP32 is
+even wired up. Then come back here for the hardware.
 
-### 5.2 Node-RED
+Two things from that guide that catch almost everyone:
 
-1. Copy `students.json` into your Node-RED **userDir** (`~/.node-red`, or
-   `%USERPROFILE%\.node-red` on Windows).
-2. Create `attendance/attendance.csv` in the same folder with **one header line**:
-   ```
-   Date,Time,StudentID,Name,Class,UID,Device
-   ```
-   (and `attendance/unknown_uids.csv` with `Date,Time,UID,Device`).
-3. Node-RED → **Menu → Import → clipboard** → paste `attendance-flow.json` → **Import**.
-4. Double-click the **Local Broker** config node, set your broker IP, **Deploy**.
-
-### 5.3 Telegram
-
-1. Message **@BotFather** → `/newbot` → copy the token.
-2. Each parent messages your bot once (Telegram will not let a bot open a conversation),
-   then send **@userinfobot** to get their numeric chat id.
-3. Put the chat id in `students.json` as `parentChatId`.
-4. Set the token as an environment variable **before** starting Node-RED:
-   ```bash
-   export TELEGRAM_BOT_TOKEN="123456:ABC..."
-   ```
-   ⚠️ The token is a password for your bot. Never paste it into the flow you export
-   or share, and never commit it.
-
-### 5.4 Google Sheets (optional)
-
-Follow the header comment in `node-red/google-apps-script.gs`, then:
-
-```bash
-export SHEETS_WEBAPP_URL="https://script.google.com/macros/s/..../exec"
-```
-
-If this variable is missing, the Sheets branch quietly does nothing — the CSV and
-Telegram paths are unaffected.
+- **Mosquitto 2.x blocks remote connections by default.** Node-RED on the same machine
+  connects fine; the ESP32 fails forever with `state=-2`. You need a config file with
+  `listener 1883 0.0.0.0`.
+- **The file nodes ship with relative paths.** They resolve against Node-RED's working
+  directory, which is not always where you expect. Make them absolute.
 
 ---
 
@@ -458,17 +584,16 @@ Telegram paths are unaffected.
 
 ### 6.1 Backend alone, before wiring anything
 
-Click the **Simulate tap A1B2C3D4** inject node. Expected:
-- `attendance.csv` grows by one row
-- the `telegram result` debug shows `{"ok":true,...}`
-- the ACK appears on `school/attendance/ack`
-
-Watch the ACK from a terminal:
-```bash
-mosquitto_sub -h localhost -t 'school/attendance/#' -v
-```
+Covered in detail in [node-red/README.md §11](node-red/README.md#11-test-with-no-hardware).
+In short: click the **Simulate tap A1B2C3D4** inject node and check that the CSV grows,
+the Telegram message arrives, and the ACK appears on `school/attendance/ack`.
 
 ### 6.2 Hardware bring-up, in this order
+
+Fastest route: upload **BuzzerTest** (§3.6), then **HardwareTest** (§3.7), then the full
+project. Each step adds one thing, so a failure always points at what you just changed.
+The list below is what to expect from the full project; HardwareTest checks steps 1-3
+and 5-7 on its own, without any network.
 
 1. **Power only.** Open Serial Monitor at 115200. You should see the banner, one
    120 ms chirp, and the LCD reading `RFID Attendance / Starting up...`.
@@ -483,7 +608,8 @@ mosquitto_sub -h localhost -t 'school/attendance/#' -v
 4. **Network check.** The idle screen should change from `WiFi...` → `Server...` →
    the board's IP address.
 5. **Tap a card.** Expect: one short beep immediately, `Card Tapped!` + the UID, then
-   within a second `Welcome!` + the student name and two short beeps.
+   within a second `Welcome!` + the student name and two short beeps. All four of your
+   cards are enrolled, so all four should say `Welcome!`.
 6. **Tap the same card again.** Expect one long beep and `Already Tapped` — and **no**
    second Telegram message.
 7. **Tap an unregistered card.** Expect three long beeps, `Unknown Card`, and a new
@@ -492,6 +618,10 @@ mosquitto_sub -h localhost -t 'school/attendance/#' -v
    reader still beeping — the sketch must never freeze.
 
 ### 6.3 Enrolling a real student
+
+Your four cards are already enrolled as `Student 01`–`Student 04` in both
+`HardwareTest.ino` and `students.json`. Rename them to real students; the UIDs stay.
+
 
 Tap the new card → open `attendance/unknown_uids.csv` → copy the UID → add a block to
 `students.json` → click the **Load student DB** inject → tap again. It should now say
@@ -503,11 +633,16 @@ Tap the new card → open `attendance/unknown_uids.csv` → copy the UID → add
 
 | Symptom | Likely cause |
 |---|---|
+| Sketch will not compile, errors mention `MFRC522` | Wrong library — you need **MFRC522v2**, see §3.1 |
+| `version = 0xFF` at boot but cards scan fine | Harmless: the chip was slow out of reset. Tie `RST` to `3V3` to stop it. A successful tap clears the warning. |
+| Reader and LCD both dead | `RST` wired to GPIO21, colliding with the LCD's SDA. Disconnect it. |
 | RC522 version reads `0x00` / `0xFF` | Cold solder joint on the header (most often MISO), loose SPI wire, or the module is on 5 V |
 | LCD faint at 3.3 V even at full pot | Expected on some units — move to §2.6(b) option 2 |
 | Reader works on the bench, dies in the enclosure | 3.3 V rail sagging — power the ESP32 from a proper USB-C supply, not a laptop hub |
 | LCD blank but lit | Contrast pot, or wrong I2C address (`0x27` vs `0x3F`) |
-| LCD shows `Server...` forever | Wrong `MQTT_HOST`, firewall on 1883, or broker requires auth |
+| LCD shows `Server...` forever | Windows Firewall blocking 1883 on the hotspot adapter (most likely), broker not running, or `listener 1883 0.0.0.0` missing |
+| Worked yesterday, dead today | The Windows Mobile Hotspot switched itself off. Turn it back on, and disable sleep on that PC. |
+| LCD shows `WiFi...` forever | Hotspot is off, or the ESP32 is out of range of the PC |
 | MQTT `state=-2` in serial | Cannot reach the broker at all — check IP and port |
 | MQTT `state=5` | Bad username/password |
 | Card reads but nothing logs | Node-RED not deployed, or topic mismatch |

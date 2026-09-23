@@ -1,35 +1,44 @@
 {
   "_comment": [
     "Student registry. The KEY is the card UID exactly as the ESP32 prints it:",
-    "uppercase hex, no spaces, no colons (e.g. A1B2C3D4).",
-    "Read the UID from the Arduino Serial Monitor at 115200 baud, or from the",
-    "'unknown_uids.csv' file that the Node-RED flow writes for unregistered cards.",
-    "parentChatId = the Telegram chat id of the parent (get it from @userinfobot).",
-    "Delete this _comment key once you start editing for real."
+    "uppercase hex, no spaces, no colons.",
+    "The four UIDs below are your real cards, read from your own serial log.",
+    "Replace the names, studentIds and classes with the real students.",
+    "parentChatId is currently YOUR Telegram id on every card, so every tap messages",
+    "you while testing. Swap in each parent's own id before going live.",
+    "New card? Tap it, read the UID from attendance/unknown_uids.csv, add it here,",
+    "then click the 'Load student DB' inject in Node-RED. No restart needed."
   ],
-
-  "A1B2C3D4": {
+  "B96DF306": {
     "studentId": "S2026-001",
-    "name": "Ali Bin Ahmad",
+    "name": "Student 01",
     "className": "5 Bestari",
-    "parentName": "Encik Ahmad",
-    "parentChatId": "111111111",
-    "parentPhone": "+60123456789"
+    "parentName": "Parent 01",
+    "parentChatId": "6535703218",
+    "parentPhone": ""
   },
-  "0D5E6F7A": {
+  "97513A25": {
     "studentId": "S2026-002",
-    "name": "Siti Nurhaliza",
+    "name": "Student 02",
     "className": "5 Bestari",
-    "parentName": "Puan Aminah",
-    "parentChatId": "222222222",
-    "parentPhone": "+60129876543"
+    "parentName": "Parent 02",
+    "parentChatId": "6535703218",
+    "parentPhone": ""
   },
-  "9F8E7D6C": {
+  "8EEB2907": {
     "studentId": "S2026-003",
-    "name": "Tan Wei Ming",
+    "name": "Student 03",
     "className": "5 Cekap",
-    "parentName": "Mr Tan",
-    "parentChatId": "333333333",
-    "parentPhone": "+60161234567"
+    "parentName": "Parent 03",
+    "parentChatId": "6535703218",
+    "parentPhone": ""
+  },
+  "295E5514": {
+    "studentId": "S2026-004",
+    "name": "Student 04",
+    "className": "5 Cekap",
+    "parentName": "Parent 04",
+    "parentChatId": "6535703218",
+    "parentPhone": ""
   }
 }

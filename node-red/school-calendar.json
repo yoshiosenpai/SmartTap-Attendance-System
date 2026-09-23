@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "THE SCHOOL DAY. Both Node-RED tabs read this file, so everything is defined once.",
+    "After editing, click 'Load calendar' on the Roll Call tab. No restart needed.",
+    "",
+    "classStart           When the class begins, 24-hour HH:MM.",
+    "graceSeconds         A tap within this many seconds of classStart counts as ON TIME.",
+    "                     After it, the tap is logged as LATE and the parent is told.",
+    "                     600 = 10 minutes.  SET THIS TO 10 FOR A LIVE DEMO.",
+    "classEnd             From this time on, a tap means going home, not arriving.",
+    "checkoutGraceSeconds How long after classEnd to wait before asking who has still",
+    "                     not tapped out. 1800 = 30 minutes. Use 10 for a demo.",
+    "",
+    "schoolDays           0=Sunday .. 6=Saturday. [1,2,3,4,5] = Monday to Friday.",
+    "                     Kelantan / Terengganu: [0,1,2,3,4] for Sunday to Thursday.",
+    "holidays             No roll call at all on these dates.",
+    "excused              Per-date list of studentIds whose parents must NOT be chased",
+    "                     (sick note, approved leave, school trip). The date below is in",
+    "                     the past and is only an example of the format.",
+    "minPresentRatio      If fewer than this fraction of the roster arrived, the office",
+    "                     summary warns that the reader may be faulty."
+  ],
+
+  "classStart": "08:00",
+  "graceSeconds": 600,
+
+  "classEnd": "13:00",
+  "checkoutGraceSeconds": 1800,
+
+  "schoolDays": [1, 2, 3, 4, 5],
+
+  "holidays": [
+    "2026-12-25"
+  ],
+
+  "excused": {
+    "2026-09-15": ["S2026-003"]
+  },
+
+  "minPresentRatio": 0.3
+}

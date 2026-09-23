@@ -1,10 +1,10 @@
 /**************************************************************************************
  *  Smart RFID Student Attendance & Parent Notification System
  *  -----------------------------------------------------------------------------------
- *  Board    : Cytron Maker ESP32 (ESP32-WROOM-32E-N8) + expansion board
- *  Reader   : Mifare RC522, SPI  --  3.3V ONLY, NEVER 5V
- *  Display  : I2C 16x2 LCD @ 0x27 on the Maker Port (SDA = GPIO21, SCL = GPIO22)
- *  Buzzer   : Active buzzer on GPIO25  (onboard passive piezo on GPIO26 = alternative)
+ *  Board    : ESP32 dev board + expansion board (incl. Cytron Maker ESP32)
+ *  Reader   : Cytron RFID-RC522 kit, SPI (MFRC522v2 lib)  --  3.3V ONLY, NEVER 5V
+ *  Display  : Cytron DS-LCD-162A-I2C, 16x2 @ 0x27  (SDA = GPIO21, SCL = GPIO22)
+ *  Buzzer   : Onboard passive piezo on GPIO26 (mute switch must be ON)
  *  Backend  : Node-RED, reached over MQTT
  *
  *  DESIGN RULES FOLLOWED
@@ -15,7 +15,9 @@
  *   - Credentials live in secrets.h so this sketch can be shared safely.
  *
  *  LIBRARIES TO INSTALL (Arduino IDE -> Tools -> Manage Libraries)
- *   1. MFRC522              by GithubCommunity      -- talks to the RC522 reader
+ *   1. MFRC522v2            by GithubCommunity      -- talks to the RC522 reader
+ *      >> search the Library Manager for "MFRC522v2", NOT "MFRC522". The two are
+ *         different libraries with incompatible APIs; the old one will not compile.
  *   2. LiquidCrystal I2C    by Frank de Brabander   -- 16x2 LCD over I2C
  *   3. PubSubClient         by Nick O'Leary         -- MQTT client
  *   4. ArduinoJson (v7.x)   by Benoit Blanchon      -- builds/parses the JSON payload
@@ -25,7 +27,10 @@
 #include <WiFi.h>
 #include <SPI.h>
 #include <Wire.h>
-#include <MFRC522.h>
+#include <MFRC522v2.h>
+#include <MFRC522DriverSPI.h>
+#include <MFRC522DriverPinSimple.h>
+#include <MFRC522Debug.h>
 #include <LiquidCrystal_I2C.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -33,21 +38,30 @@
 #include "secrets.h"
 
 /* ===================================================================================
- *  1.  PIN MAP  -  every pin here is confirmed safe on the Maker ESP32
+ *  1.  PIN MAP  -  standard ESP32 GPIOs; none clash with flash or input-only pins
  * =================================================================================== */
 #define PIN_RC522_SCK    18      // SPI clock    (VSPI default)
 #define PIN_RC522_MISO   19      // SPI data in  (VSPI default)
 #define PIN_RC522_MOSI   23      // SPI data out (VSPI default)
 #define PIN_RC522_SS      5      // Chip select  (RC522 label: SDA / NSS)
-#define PIN_RC522_RST    27      // Reset
+// RST -> NOT CONNECTED. The MFRC522v2 SPI driver has no reset-pin parameter; it
+// resets the chip in software over SPI. The RC522's RST pin has an internal pull-up,
+// so leaving it unwired is correct. Do NOT wire it to GPIO21 as some tutorials show
+// -- GPIO21 is this project's LCD SDA line.
 
-#define PIN_I2C_SDA      21      // Maker Port SDA -- LCD
-#define PIN_I2C_SCL      22      // Maker Port SCL -- LCD
+#define PIN_I2C_SDA      21      // LCD SDA (Maker Port SDA on a Maker ESP32)
+#define PIN_I2C_SCL      22      // LCD SCL (Maker Port SCL on a Maker ESP32)
 
-#define PIN_BUZZER       25      // External ACTIVE buzzer (+ leg)
-#define BUZZER_IS_ACTIVE  1      // 1 = active buzzer (plain HIGH/LOW)
-                                 // 0 = passive piezo (uses tone(); onboard one is GPIO26)
-#define BUZZER_TONE_HZ 2500      // only used when BUZZER_IS_ACTIVE is 0
+#define USE_INTERNAL_PULLUPS 0   // 1 only if you desoldered the LCD backpack pull-ups
+
+// Onboard PASSIVE piezo of the Maker ESP32. Remember the hardware MUTE SWITCH:
+// if it is off you hear nothing, whatever the code does. See BuzzerTest/ first.
+#define PIN_BUZZER       26      // 26 = onboard piezo | 25 = external active buzzer
+#define BUZZER_IS_ACTIVE  0      // 0 = passive piezo, driven with tone()
+                                 // 1 = active buzzer, driven with plain HIGH/LOW
+                                 // Each result pattern carries its own pitch (see
+                                 // section 5). Run BuzzerTest option 6 to find where
+                                 // your piezo is loudest and shift them if you like.
 
 /* ===================================================================================
  *  2.  IDENTITY, TOPICS AND TIMING CONSTANTS
@@ -67,7 +81,12 @@ const long     NTP_GMT_OFFSET_S  = 8 * 3600; // UTC+8 (Malaysia). Change for you
 /* ===================================================================================
  *  3.  GLOBAL OBJECTS
  * =================================================================================== */
-MFRC522           rfid(PIN_RC522_SS, PIN_RC522_RST);
+// MFRC522v2 builds the reader in three steps: a chip-select pin object, a bus
+// driver that owns it, then the reader that talks through the driver.
+MFRC522DriverPinSimple ssPin(PIN_RC522_SS);
+MFRC522DriverSPI       driver{ssPin};
+MFRC522                rfid{driver};
+
 LiquidCrystal_I2C lcd(0x27, 16, 2);          // change to 0x3F if your backpack differs
 WiFiClient        net;
 PubSubClient      mqtt(net);
@@ -86,50 +105,79 @@ uint32_t tLastUid    = 0;
 String   lcdLine1    = "";     // what is currently ON the glass
 String   lcdLine2    = "";
 
-// --- buzzer beep-pattern state machine -------------------------------------------
-uint8_t  beepsLeft   = 0;      // how many beeps still owed
-bool     beepOn      = false;
-uint32_t tBeepNext   = 0;
-uint16_t beepOnMs    = 80;
-uint16_t beepOffMs   = 80;
+// --- buzzer note sequencer (same design as BuzzerTest / HardwareTest) -------------
+struct Note {
+  uint16_t freq;     // Hz, or 0 for a rest
+  uint16_t ms;
+};
+
+const Note *seqData    = nullptr;
+uint8_t     seqLen     = 0;
+uint8_t     seqIdx     = 0;
+uint32_t    tNextNote  = 0;
+bool        seqRunning = false;
 
 
 /* ===================================================================================
  *  5.  BUZZER  -  never blocks; loop() drives the pattern forward
  * =================================================================================== */
-void buzzerWrite(bool on) {
+void toneOn(uint16_t freq) {
 #if BUZZER_IS_ACTIVE
-  digitalWrite(PIN_BUZZER, on ? HIGH : LOW);
+  (void)freq;                          // an active buzzer has one pitch of its own
+  digitalWrite(PIN_BUZZER, HIGH);
 #else
-  if (on) tone(PIN_BUZZER, BUZZER_TONE_HZ);
-  else    noTone(PIN_BUZZER);
+  tone(PIN_BUZZER, freq);
 #endif
 }
 
-// Ask for N beeps. Returns immediately -- the sound happens in serviceBuzzer().
-void beep(uint8_t times, uint16_t onMs = 80, uint16_t offMs = 80) {
-  beepsLeft = times;
-  beepOnMs  = onMs;
-  beepOffMs = offMs;
-  beepOn    = false;
-  tBeepNext = millis();        // start on the very next loop pass
+void toneOff() {
+#if BUZZER_IS_ACTIVE
+  digitalWrite(PIN_BUZZER, LOW);
+#else
+  noTone(PIN_BUZZER);
+#endif
 }
 
-void serviceBuzzer() {
-  if (beepsLeft == 0 && !beepOn) return;
-  if ((int32_t)(millis() - tBeepNext) < 0) return;
+// Start a pattern. Returns immediately -- the sound happens in serviceTone().
+void playPattern(const Note *notes, uint8_t len) {
+  seqData    = notes;
+  seqLen     = len;
+  seqIdx     = 0;
+  tNextNote  = millis();
+  seqRunning = true;
+}
 
-  if (!beepOn) {               // time to start a beep
-    buzzerWrite(true);
-    beepOn    = true;
-    tBeepNext = millis() + beepOnMs;
-  } else {                     // time to end a beep
-    buzzerWrite(false);
-    beepOn    = false;
-    if (beepsLeft > 0) beepsLeft--;
-    tBeepNext = millis() + beepOffMs;
+void serviceTone() {
+  if (!seqRunning) return;
+  if ((int32_t)(millis() - tNextNote) < 0) return;
+
+  if (seqIdx >= seqLen) {
+    toneOff();
+    seqRunning = false;
+    return;
   }
+
+  const Note &n = seqData[seqIdx];
+  if (n.freq == 0) toneOff();
+  else             toneOn(n.freq);
+
+  tNextNote = millis() + n.ms;
+  seqIdx++;
 }
+
+/* --- one sound per attendance result, so staff can hear what happened ---------
+   Node-RED sets the status; the firmware only picks the pattern.               */
+const Note P_BOOT[]   = { {1800,  90}, {0, 50}, {2600, 130} };            // powered up
+const Note P_TAP[]    = { {2500,  60} };                                  // card seen
+const Note P_ONTIME[] = { {2000,  70}, {0, 40}, {2800,  90} };            // welcome, rising
+const Note P_LATE[]   = { {2600,  70}, {0, 60}, {2000,  70}, {0, 60},
+                          {1500, 220} };                                  // falling = late
+const Note P_OUT[]    = { {2200, 110}, {0, 50}, {1600, 200} };            // goodbye
+const Note P_DUP[]    = { {1200, 300} };                                  // already tapped
+const Note P_ERR[]    = { { 600, 180}, {0, 90}, { 600, 180}, {0, 90},
+                          { 600, 260} };                                  // unknown card
+
+#define LEN(a) (sizeof(a) / sizeof(a[0]))
 
 /* ===================================================================================
  *  6.  LCD HELPERS  -  only touch the I2C bus when the text really changed
@@ -169,6 +217,23 @@ void serviceLcd() {
     tLcdRelease = 0;
     lcdIdle();
   }
+}
+
+// Runs once at boot. If the LCD stays blank, check this output first:
+//   "0x27" found  -> wiring is fine, it is a contrast problem (turn the blue pot)
+//   "0x3F" found  -> change the LiquidCrystal_I2C(...) address at the top of this file
+//   nothing found -> SDA/SCL swapped, no power to the backpack, or a loose wire
+void i2cScan() {
+  Serial.println("[I2C] scanning...");
+  uint8_t found = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("[I2C]   device at 0x%02X\n", addr);
+      found++;
+    }
+  }
+  if (!found) Serial.println("[I2C]   nothing found -- check SDA/SCL and power");
 }
 
 /* ===================================================================================
@@ -227,9 +292,19 @@ void onMqttMessage(char *topic, byte *payload, unsigned int len) {
   const char *st = doc["status"] | "ok";
 
   lcdFlash(l1, l2);
-  if      (strcmp(st, "ok")        == 0) beep(2, 70, 70);    // accepted = two short beeps
-  else if (strcmp(st, "duplicate") == 0) beep(1, 300, 0);    // repeat   = one long beep
-  else                                   beep(3, 250, 120);  // unknown  = three long beeps
+
+  // Node-RED decides what happened; we just play the matching sound.
+  //   in_ontime  arrived within the grace period
+  //   in_late    arrived after it -- distinctly FALLING so it is obvious
+  //   out        went home
+  //   duplicate  tapped again, nothing recorded
+  //   unknown    card is not on the roster
+  if      (strcmp(st, "in_ontime") == 0) playPattern(P_ONTIME, LEN(P_ONTIME));
+  else if (strcmp(st, "ok")        == 0) playPattern(P_ONTIME, LEN(P_ONTIME));
+  else if (strcmp(st, "in_late")   == 0) playPattern(P_LATE,   LEN(P_LATE));
+  else if (strcmp(st, "out")       == 0) playPattern(P_OUT,    LEN(P_OUT));
+  else if (strcmp(st, "duplicate") == 0) playPattern(P_DUP,    LEN(P_DUP));
+  else                                   playPattern(P_ERR,    LEN(P_ERR));
 }
 
 void serviceMqtt() {
@@ -312,7 +387,7 @@ void serviceRfid() {
   tLastUid = millis();
 
   Serial.printf("[RFID] UID %s\n", uid.c_str());
-  beep(1, 60, 0);                      // instant feedback, before the network round-trip
+  playPattern(P_TAP, LEN(P_TAP));      // instant feedback, before the network round-trip
   lcdFlash("Card Tapped!", uid);
   publishScan(uid);
   // The final verdict ("Welcome, Ali") arrives asynchronously in onMqttMessage().
@@ -328,19 +403,47 @@ void setup() {
 
   // --- buzzer ---
   pinMode(PIN_BUZZER, OUTPUT);
-  buzzerWrite(false);
+  toneOff();
 
-  // --- LCD on the Maker Port ---
+  // --- LCD ---
+  // The Cytron DS-LCD-162A-I2C backpack carries its own ~4.7k pull-ups to ITS Vcc.
+  // If you powered it from 5 V, the bus idles at 5 V, which is above the ESP32's
+  // 3.6 V absolute maximum -- see README section 2.6(b) before wiring.
+  // If you removed those resistors (README option 3), set USE_INTERNAL_PULLUPS to 1.
+#if USE_INTERNAL_PULLUPS
+  pinMode(PIN_I2C_SDA, INPUT_PULLUP);
+  pinMode(PIN_I2C_SCL, INPUT_PULLUP);
+#endif
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  Wire.setClock(100000);               // 100 kHz is kind to long jumper wires
+  i2cScan();                           // prints every address found -- expect 0x27
   lcd.init();
   lcd.backlight();
   lcd.clear();
   lcdShow("RFID Attendance", "Starting up...");
 
   // --- RC522 over VSPI ---
+  // Start SPI with our pins first. They are the ESP32 defaults, and SPIClass::begin()
+  // returns early if the bus is already up, so the driver's own begin() is a no-op.
   SPI.begin(PIN_RC522_SCK, PIN_RC522_MISO, PIN_RC522_MOSI, PIN_RC522_SS);
   rfid.PCD_Init();
-  rfid.PCD_DumpVersionToSerial();      // 0x92 / 0x91 = good, 0x00 or 0xFF = wiring fault
+  MFRC522Debug::PCD_DumpVersionToSerial(rfid, Serial);
+
+  // The RC522 often ignores its very first version read after power-up -- it is still
+  // coming out of reset while we are already probing it. Retry before reporting a
+  // fault, otherwise a perfectly good reader looks broken at every boot.
+  byte rcVer = 0;
+  for (uint8_t i = 0; i < 5; i++) {
+    rcVer = (byte)rfid.PCD_GetVersion();
+    if (rcVer != 0x00 && rcVer != 0xFF) break;
+    delay(50);                         // setup() only -- loop() stays non-blocking
+  }
+  if (rcVer == 0x00 || rcVer == 0xFF) {
+    Serial.println("[RC522] version read got no answer -- carrying on anyway.");
+    Serial.println("[RC522] If cards still scan, ignore it. Tying RST to 3V3 fixes it.");
+  } else {
+    Serial.printf("[RC522] version = 0x%02X  OK\n", rcVer);
+  }
 
   // --- network ---
   wifiBegin();
@@ -352,7 +455,7 @@ void setup() {
   mqtt.setSocketTimeout(2);            // caps how long a failed connect() can stall us
   mqtt.setKeepAlive(30);
 
-  beep(1, 120, 0);                     // one chirp = firmware is alive
+  playPattern(P_BOOT, LEN(P_BOOT));    // two-note chirp = firmware is alive
 }
 
 /* ===================================================================================
@@ -362,6 +465,6 @@ void loop() {
   serviceWifi();     // heal Wi-Fi if it dropped
   serviceMqtt();     // heal MQTT, pump incoming acks
   serviceRfid();     // poll for a card
-  serviceBuzzer();   // advance the beep pattern
+  serviceTone();     // advance the beep pattern
   serviceLcd();      // release the result screen when its time is up
 }
