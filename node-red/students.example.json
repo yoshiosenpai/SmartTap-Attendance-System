@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "TEMPLATE - safe to commit. Copy to students.json and fill in real data.",
+    "The real students.json contains children's names and parents' Telegram chat ids.",
+    "Keep it OUT of git:  git rm --cached node-red/students.json",
+    "",
+    "KEY = the card UID exactly as the reader prints it: uppercase hex, no spaces.",
+    "Tap an unknown card and read its UID from attendance/unknown_uids.csv.",
+    "parentChatId = use the 'Find new parent chat IDs' button on the Tap Processing tab."
+  ],
+  "AABBCCDD": {
+    "studentId": "S2026-001",
+    "name": "Student Name",
+    "className": "5 Bestari",
+    "parentName": "Parent Name",
+    "parentChatId": "",
+    "parentPhone": ""
+  }
+}

@@ -1529,5 +1529,121 @@
     "wires": [
       []
     ]
+  },
+  {
+    "id": "c_enrol",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "8 - Collect parent chat IDs",
+    "info": "Give each parent the bot link (t.me/yourbotname). They press START and send any message - 'hi' is enough.\n\nThen press the button here and their name and chat id appear in the debug sidebar, ready to paste into students.json.\n\nTelegram only holds unread messages for 24 hours, so collect on the day. Ids already seen are remembered, so pressing twice still shows everyone.",
+    "x": 200,
+    "y": 850,
+    "wires": []
+  },
+  {
+    "id": "inj_enrol",
+    "type": "inject",
+    "z": "f1attend",
+    "name": "Find new parent chat IDs",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 200,
+    "y": 900,
+    "wires": [
+      [
+        "fn_enrol_build"
+      ]
+    ]
+  },
+  {
+    "id": "fn_enrol_build",
+    "type": "function",
+    "z": "f1attend",
+    "name": "ask Telegram",
+    "func": "// =====================================================================\n//  FIND NEW PARENT CHAT IDs\n//\n//  Getting 30 parents to each install @userinfobot and read out a number\n//  does not scale. Instead: give every parent the bot link, ask them to\n//  press START and send any message. Then press this button and their\n//  name and chat id appear below, ready to paste into students.json.\n//\n//  Telegram keeps un-read updates for 24 hours only, so collect them on\n//  the day. Once read here they are consumed, which is why each id is\n//  remembered - press the button twice and you still see everyone.\n// =====================================================================\nconst TOKEN = env.get('TELEGRAM_BOT_TOKEN');\nif (!TOKEN) {\n    node.error('TELEGRAM_BOT_TOKEN is empty. Flow tab -> Environment.');\n    return null;\n}\n\nconst offset = flow.get('tgOffset') || 0;\nmsg.url = 'https://api.telegram.org/bot' + TOKEN + '/getUpdates?timeout=0' +\n          (offset ? ('&offset=' + offset) : '');\nmsg.payload = '';\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 430,
+    "y": 900,
+    "wires": [
+      [
+        "http_enrol"
+      ]
+    ]
+  },
+  {
+    "id": "http_enrol",
+    "type": "http request",
+    "z": "f1attend",
+    "name": "getUpdates",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 620,
+    "y": 900,
+    "wires": [
+      [
+        "fn_enrol_extract"
+      ]
+    ]
+  },
+  {
+    "id": "fn_enrol_extract",
+    "type": "function",
+    "z": "f1attend",
+    "name": "who messaged the bot?",
+    "func": "// Pull the sender of every waiting message out of the getUpdates reply.\nconst r = msg.payload;\n\nif (!r || typeof r !== 'object') {\n    node.error('Telegram did not return JSON. Check the bot token.');\n    return null;\n}\nif (!r.ok) {\n    node.error('Telegram said: ' + (r.description || JSON.stringify(r)));\n    return null;\n}\n\nconst known = flow.get('knownChats') || {};\nlet offset  = flow.get('tgOffset') || 0;\nconst fresh = [];\n\n(r.result || []).forEach(function (u) {\n    if (u.update_id >= offset) { offset = u.update_id + 1; }\n\n    const m = u.message || u.edited_message || u.channel_post || u.my_chat_member;\n    if (!m || !m.chat) { return; }\n\n    const chat = m.chat;\n    const id   = String(chat.id);\n    const name = [chat.first_name, chat.last_name].filter(Boolean).join(' ') ||\n                 chat.title || chat.username || '(no name)';\n\n    if (!known[id]) {\n        known[id] = name;\n        fresh.push({ chatId: id, name: name, username: chat.username || '' });\n    }\n});\n\nflow.set('knownChats', known);\nflow.set('tgOffset', offset);\n\n// A block you can paste straight into students.json, one line per person.\nconst paste = fresh.map(function (c) {\n    return '\"parentChatId\": \"' + c.chatId + '\",   // ' + c.name;\n});\n\nnode.status({\n    fill:  fresh.length ? 'green' : 'grey',\n    shape: 'dot',\n    text:  fresh.length ? (fresh.length + ' new') : ('no new (known: ' +\n           Object.keys(known).length + ')')\n});\n\nmsg.payload = {\n    newContacts:  fresh,\n    pasteIntoStudentsJson: paste,\n    everyoneSoFar: known\n};\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 900,
+    "wires": [
+      [
+        "dbg_enrol"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_enrol",
+    "type": "debug",
+    "z": "f1attend",
+    "name": "PARENT CHAT IDs",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1040,
+    "y": 900,
+    "wires": []
   }
 ]
