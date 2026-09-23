@@ -1645,5 +1645,141 @@
     "x": 1040,
     "y": 900,
     "wires": []
+  },
+  {
+    "id": "c_verify",
+    "type": "comment",
+    "z": "f1attend",
+    "name": "9 - Verify every parent can be reached",
+    "info": "Sends one test message to each distinct parentChatId in students.json, plus the office account.\n\nRun this the DAY BEFORE a demo. It catches the one failure you cannot see otherwise: a parent whose chat id is correct but who never pressed START on the bot. Telegram silently refuses those, so the alert just never arrives.\n\nSiblings sharing a parent are only messaged once.",
+    "x": 230,
+    "y": 980,
+    "wires": []
+  },
+  {
+    "id": "inj_verify",
+    "type": "inject",
+    "z": "f1attend",
+    "name": "VERIFY all parent chat IDs",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 200,
+    "y": 1030,
+    "wires": [
+      [
+        "fn_verify_reset"
+      ]
+    ]
+  },
+  {
+    "id": "fn_verify_reset",
+    "type": "function",
+    "z": "f1attend",
+    "name": "reset tally",
+    "func": "// Clear the tally so each verify run starts from zero.\nflow.set('verifyTally', null);\nnode.status({});\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 410,
+    "y": 1030,
+    "wires": [
+      [
+        "fn_verify_build"
+      ]
+    ]
+  },
+  {
+    "id": "fn_verify_build",
+    "type": "function",
+    "z": "f1attend",
+    "name": "one message per account",
+    "func": "// =====================================================================\n//  VERIFY EVERY PARENT CHAT ID\n//\n//  Sends one short test message to each distinct parentChatId in\n//  students.json, plus the office id. Run it the day before a demo.\n//\n//  The failure it is designed to catch: a parent whose id is correct but\n//  who has never pressed START on the bot. Telegram refuses with\n//  \"chat not found\", and you only discover it when a real alert silently\n//  fails to arrive.\n// =====================================================================\nconst TOKEN = env.get('TELEGRAM_BOT_TOKEN');\nif (!TOKEN) {\n    node.error('TELEGRAM_BOT_TOKEN is empty. Flow tab -> Environment.');\n    return null;\n}\n\nconst db = global.get('students') || {};\nconst uids = Object.keys(db).filter(function (k) { return k.charAt(0) !== '_'; });\n\nif (!uids.length) {\n    node.error('No students loaded. Click \"Load student DB\" first.');\n    return null;\n}\n\nconst out = [];\nconst seen = {};\nconst missing = [];\n\nuids.forEach(function (uid) {\n    const s = db[uid];\n    const id = String(s.parentChatId || '').trim();\n\n    if (!id) {\n        missing.push(s.name + ' (' + s.studentId + ')');\n        return;\n    }\n    if (seen[id]) {\n        // Two students sharing a parent is normal - siblings. Only message once.\n        seen[id].push(s.name);\n        return;\n    }\n    seen[id] = [s.name];\n\n    out.push({\n        checkFor: { label: 'parent of ' + s.name, chatId: id },\n        url:      'https://api.telegram.org/bot' + TOKEN + '/sendMessage',\n        headers:  { 'Content-Type': 'application/json' },\n        payload:  {\n            chat_id: id,\n            text: 'SmartTap test message.\\n\\nIf you can read this, attendance alerts ' +\n                  'to this account are working. No action needed.'\n        }\n    });\n});\n\n// The office / admin account gets checked too.\nconst admin = String(env.get('ADMIN_CHAT_ID') || '').trim();\nif (admin && !seen[admin]) {\n    out.push({\n        checkFor: { label: 'OFFICE (admin)', chatId: admin },\n        url:      'https://api.telegram.org/bot' + TOKEN + '/sendMessage',\n        headers:  { 'Content-Type': 'application/json' },\n        payload:  { chat_id: admin, text: 'SmartTap test message to the office account.' }\n    });\n}\n\nif (missing.length) {\n    node.warn('NO parentChatId set for: ' + missing.join(', '));\n}\n\nnode.status({ fill: 'blue', shape: 'dot', text: 'testing ' + out.length + ' account(s)' });\nreturn [out];\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 610,
+    "y": 1030,
+    "wires": [
+      [
+        "http_verify"
+      ]
+    ]
+  },
+  {
+    "id": "http_verify",
+    "type": "http request",
+    "z": "f1attend",
+    "name": "Telegram",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 830,
+    "y": 1030,
+    "wires": [
+      [
+        "fn_verify_report"
+      ]
+    ]
+  },
+  {
+    "id": "fn_verify_report",
+    "type": "function",
+    "z": "f1attend",
+    "name": "reachable?",
+    "func": "// One line per account, saying plainly whether it can be reached.\nconst who = msg.checkFor || { label: '?', chatId: '?' };\nconst r   = msg.payload;\n\nlet line, ok = false;\n\nif (r && r.ok) {\n    ok = true;\n    line = 'OK    ' + who.label + '  (' + who.chatId + ')';\n} else {\n    const code = r && r.error_code;\n    const desc = (r && r.description) || 'no response';\n    let why;\n    if (code === 400 && /chat not found/i.test(desc)) {\n        why = 'has NOT pressed START on the bot yet';\n    } else if (code === 403 && /blocked/i.test(desc)) {\n        why = 'has blocked the bot';\n    } else if (code === 400 && /chat_id is empty|invalid/i.test(desc)) {\n        why = 'the chat id is not a valid number';\n    } else if (code === 401) {\n        why = 'the BOT TOKEN is wrong (this affects everyone)';\n    } else {\n        why = desc;\n    }\n    line = 'FAIL  ' + who.label + '  (' + who.chatId + ')  -> ' + why;\n}\n\n// Keep a running tally so the last message shows the whole picture.\nconst tally = flow.get('verifyTally') || { ok: 0, fail: 0, lines: [] };\ntally[ok ? 'ok' : 'fail']++;\ntally.lines.push(line);\nflow.set('verifyTally', tally);\n\nnode.status({\n    fill:  tally.fail ? 'red' : 'green',\n    shape: 'dot',\n    text:  tally.ok + ' ok, ' + tally.fail + ' failed'\n});\n\nmsg.payload = {\n    result:  line,\n    summary: tally.ok + ' reachable, ' + tally.fail + ' unreachable',\n    all:     tally.lines\n};\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1010,
+    "y": 1030,
+    "wires": [
+      [
+        "dbg_verify"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_verify",
+    "type": "debug",
+    "z": "f1attend",
+    "name": "REACHABILITY",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload.result",
+    "targetType": "msg",
+    "statusVal": "payload.result",
+    "statusType": "msg",
+    "x": 1200,
+    "y": 1030,
+    "wires": []
   }
 ]
